@@ -92,7 +92,7 @@ st.sidebar.title("ESG Landscape Explorer")
 page = st.sidebar.radio(
     "View",
     ["Overview", "PCA Explorer", "Clusters", "Industry Profiles",
-     "Disclosure Gap"],
+     "Disclosure Gap", "SQL Query"],
 )
 st.sidebar.markdown("---")
 st.sidebar.caption(
@@ -359,3 +359,96 @@ elif page == "Disclosure Gap":
     fig3.update_xaxes(tickformat=".0%")
     fig3.update_layout(yaxis={"categoryorder": "total ascending"})
     st.plotly_chart(fig3, use_container_width=True)
+
+
+# ============================== SQL QUERY ================================== #
+elif page == "SQL Query":
+    import sqlite3
+
+    st.title("SQL Query")
+    DB_PATH = f"{OUT}/esg.db"
+    if not os.path.exists(DB_PATH):
+        st.error(
+            "esg.db not found. Build it with: `python -m src.build_sqlite --slim`"
+        )
+        st.stop()
+
+    st.markdown(
+        "Run read-only **SQL** against the analysis tables. "
+        "Only `SELECT`/`WITH` queries are allowed."
+    )
+
+    @st.cache_resource(show_spinner=False)
+    def _conn():
+        # read-only connection, shared across reruns
+        return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True,
+                               check_same_thread=False)
+
+    con = _conn()
+    tables = pd.read_sql(
+        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name", con
+    )["name"].tolist()
+
+    with st.expander("Tables in this database"):
+        for t in tables:
+            cols = pd.read_sql(f'PRAGMA table_info("{t}")', con)["name"].tolist()
+            n = pd.read_sql(f'SELECT COUNT(*) AS n FROM "{t}"', con)["n"][0]
+            preview = ", ".join(cols[:8]) + (" …" if len(cols) > 8 else "")
+            st.markdown(f"**{t}** ({n:,} rows) — {preview}")
+
+    examples = {
+        "Top 10 highest-emitting companies": (
+            "SELECT m.company_name, m.industry, w.CO2DIRECTSCOPE1\n"
+            "FROM wide_matrix w\n"
+            "JOIN company_meta m ON m.perm_id = w.perm_id\n"
+            "WHERE w.CO2DIRECTSCOPE1 IS NOT NULL\n"
+            "ORDER BY w.CO2DIRECTSCOPE1 DESC\n"
+            "LIMIT 10;"
+        ),
+        "Company count per industry": (
+            "SELECT industry, COUNT(*) AS companies\n"
+            "FROM company_meta\n"
+            "GROUP BY industry\n"
+            "ORDER BY companies DESC\n"
+            "LIMIT 20;"
+        ),
+        "Cluster sizes": (
+            "SELECT cluster, COUNT(*) AS companies\n"
+            "FROM clusters\n"
+            "GROUP BY cluster\n"
+            "ORDER BY cluster;"
+        ),
+        "Strongest PC1 loadings": (
+            "SELECT metric_name, PC1\n"
+            "FROM pca_loadings\n"
+            "ORDER BY ABS(PC1) DESC\n"
+            "LIMIT 15;"
+        ),
+    }
+    pick = st.selectbox("Example query (optional)", ["—"] + list(examples))
+    default_sql = examples.get(pick, "SELECT * FROM company_meta LIMIT 20;")
+
+    sql = st.text_area("SQL", value=default_sql, height=160)
+    run = st.button("Run query", type="primary")
+
+    if run:
+        low = sql.strip().lower().rstrip(";")
+        if not (low.startswith("select") or low.startswith("with")):
+            st.error("Only SELECT / WITH queries are allowed.")
+        elif any(f" {kw} " in f" {low} " for kw in
+                 ("insert", "update", "delete", "drop", "alter", "create",
+                  "attach", "pragma")):
+            st.error("Write/DDL statements are not allowed.")
+        else:
+            try:
+                # hard row cap so a huge result can't hang the app
+                res = pd.read_sql(f"SELECT * FROM ({sql.rstrip(';')}) LIMIT 5000",
+                                  con)
+                st.success(f"{len(res):,} rows (capped at 5,000)")
+                st.dataframe(res, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "Download CSV", res.to_csv(index=False).encode(),
+                    file_name="query_result.csv", mime="text/csv",
+                )
+            except Exception as e:  # noqa: BLE001 -- surface SQL errors to user
+                st.error(f"Query error: {e}")
