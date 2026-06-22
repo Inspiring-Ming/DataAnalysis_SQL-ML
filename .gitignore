@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Secrets must never be committed (real password lives in Streamlit Cloud).
+.streamlit/secrets.toml
+
+# NOTE: outputs/*.parquet ARE committed on purpose — the app reads them at
+# runtime and does not regenerate them. Do not ignore them.
