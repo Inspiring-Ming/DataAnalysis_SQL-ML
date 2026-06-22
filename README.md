@@ -3,11 +3,16 @@
 An end-to-end data-science project on a real, messy ESG dataset: **6.6M raw
 observations → a clean company × metric matrix → PCA, clustering, industry
 profiling, and a data-quality (disclosure-gap) analysis — served as an
-interactive Streamlit dashboard.**
+interactive Streamlit dashboard with an in-app SQL console.**
 
 Built on Clarity AI corporate ESG data (Feb 2025): ~65k companies, 96 metrics
 across the Environmental / Social / Governance pillars, matched to industries
 via perm-id.
+
+> **Live demo (password-gated):** deployed on Hugging Face Spaces. The app is
+> gated behind a single password read from `st.secrets["app_password"]`; if no
+> password is configured it runs open (handy for local dev). See
+> [DEPLOY.md](DEPLOY.md) for how it is hosted.
 
 ---
 
@@ -44,9 +49,12 @@ raw long-format CSVs  (6.6M rows, mixed units, 12 orders of magnitude)
   pca_scores / pca_loadings / pca_explained
   clusters.parquet                KMeans archetypes
   industry_profile.parquet        z-scored E/S/G profile per industry
+        │  src/build_sqlite.py  (optional)
+        ▼
+  esg.db                          analytical tables as a queryable SQLite DB
         │  app.py
         ▼
-  Streamlit dashboard (5 interactive views)
+  Streamlit dashboard (6 interactive views, incl. SQL console)
 ```
 
 ### Key data-science decisions (the actual work)
@@ -68,12 +76,17 @@ raw long-format CSVs  (6.6M rows, mixed units, 12 orders of magnitude)
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-python src/prepare_data.py     # build matrix + metadata  (~1-2 min)
-python src/analysis.py         # PCA, clusters, profiles  (~30 s)
-streamlit run app.py           # launch dashboard
+python src/prepare_data.py            # build matrix + metadata  (~1-2 min)
+python src/analysis.py                # PCA, clusters, profiles  (~30 s)
+python -m src.build_sqlite --slim     # (optional) build esg.db for the SQL page
+streamlit run app.py                  # launch dashboard
 ```
 
-Or with the Makefile: `make all` then `make app`.
+Or with the Makefile: `make all`, then `make sqlite` (optional), then `make app`.
+
+Makefile targets: `make data` · `make analysis` · `make sqlite` (slim
+`esg.db`, used by the app's SQL page) · `make sqlite-full` (local-only ~960 MB
+DB with the raw observation tables) · `make app` · `make clean`.
 
 ---
 
@@ -86,6 +99,7 @@ Or with the Makefile: `make all` then `make app`.
 | **Clusters** | KMeans archetypes in PCA space + industry composition (tune k) |
 | **Industry Profiles** | z-scored E/S/G heatmap; rank industries on any metric |
 | **Disclosure Gap** | Reported vs estimated share by pillar and by metric |
+| **SQL Query** | Read-only `SELECT`/`WITH` console over `esg.db`, with example queries and CSV export |
 
 ---
 
@@ -93,11 +107,16 @@ Or with the Makefile: `make all` then `make app`.
 
 ```
 esg_project/
-├── app.py                 Streamlit dashboard
+├── app.py                 Streamlit dashboard (incl. password gate + SQL page)
 ├── src/
 │   ├── prepare_data.py    long → wide pipeline
-│   └── analysis.py        PCA / KMeans / profiling (importable + CLI)
-├── outputs/               cached parquet artifacts
+│   ├── analysis.py        PCA / KMeans / profiling (importable + CLI)
+│   └── build_sqlite.py    parquet → SQLite (slim esg.db / full esg_full.db)
+├── outputs/               cached parquet artifacts + esg.db
+├── .streamlit/
+│   └── secrets.toml.example   app_password template (real secrets gitignored)
+├── Makefile
 ├── requirements.txt
+├── DEPLOY.md              hosting guide (Hugging Face Spaces)
 └── README.md
 ```
