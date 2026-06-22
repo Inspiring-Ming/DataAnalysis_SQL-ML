@@ -41,8 +41,10 @@ def check_password() -> bool:
         return True
 
     st.title("ESG Landscape Explorer")
-    pw = st.text_input("Enter password to view", type="password")
-    if pw == "":
+    with st.form("login", clear_on_submit=False):
+        pw = st.text_input("Enter password to view", type="password")
+        submitted = st.form_submit_button("Enter")
+    if not submitted:
         st.stop()
     if pw == expected:
         st.session_state["authed"] = True
