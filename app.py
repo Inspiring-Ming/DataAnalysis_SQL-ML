@@ -362,6 +362,93 @@ elif page == "Disclosure Gap":
     fig3.update_layout(yaxis={"categoryorder": "total ascending"})
     st.plotly_chart(fig3, use_container_width=True)
 
+    # ---- drill-downs: link the gap to industry / metric / company / country ----
+    st.markdown("---")
+    st.subheader("Drill down: who reports, who relies on estimates")
+    st.caption(
+        "Estimated share = P(ESTIMATED) per group. Policy *flags* are almost "
+        "always reported; quantitative environmental metrics are mostly "
+        "estimated — so the gap concentrates by pillar, industry and geography."
+    )
+
+    @st.cache_data(show_spinner=False)
+    def disclosure_tables():
+        return {
+            "industry": pd.read_parquet(f"{OUT}/disclosure_by_industry.parquet"),
+            "metric_industry": pd.read_parquet(
+                f"{OUT}/disclosure_by_metric_industry.parquet"),
+            "company": pd.read_parquet(f"{OUT}/disclosure_by_company.parquet"),
+            "country": pd.read_parquet(f"{OUT}/disclosure_by_country.parquet"),
+        }
+
+    DT = disclosure_tables()
+    t_ind, t_mi, t_co, t_geo = st.tabs(
+        ["By industry", "By metric × industry", "By company", "By geography"])
+
+    with t_ind:
+        di = DT["industry"].copy()
+        # collapse pillar rows into one weighted estimated_share per industry
+        di["est_n"] = di["estimated_share"] * di["n"]
+        di = di.groupby("industry", as_index=False).agg(
+            est_n=("est_n", "sum"), n=("n", "sum"))
+        di["estimated_share"] = di["est_n"] / di["n"]
+        di = di[di["n"] >= 3000].sort_values("estimated_share")
+        show = pd.concat([di.head(10), di.tail(10)])
+        fig = px.bar(show, x="estimated_share", y="industry", orientation="h",
+                     height=650, labels={"estimated_share": "Share estimated",
+                                         "industry": ""})
+        fig.update_xaxes(tickformat=".0%")
+        fig.update_layout(yaxis={"categoryorder": "total descending"})
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Most self-reported (top) vs most estimate-reliant (bottom) "
+                   "industries; industries with ≥3,000 observations.")
+
+    with t_mi:
+        mi = DT["metric_industry"]
+        metrics = sorted(mi["metric_name"].unique())
+        default = metrics.index("CO2DIRECTSCOPE1") if "CO2DIRECTSCOPE1" in metrics else 0
+        metric = st.selectbox("Metric", metrics, index=default)
+        sub = mi[(mi["metric_name"] == metric) & (mi["n"] >= 50)] \
+            .sort_values("estimated_share")
+        if sub.empty:
+            st.info("Too few observations for this metric across industries.")
+        else:
+            fig = px.bar(sub, x="estimated_share", y="industry", orientation="h",
+                         height=700, labels={"estimated_share": "Share estimated",
+                                             "industry": ""})
+            fig.update_xaxes(tickformat=".0%")
+            fig.update_layout(yaxis={"categoryorder": "total descending"})
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(f"Estimated share of **{metric}** by industry "
+                       "(≥50 observations). Even one metric splits by sector.")
+
+    with t_co:
+        co = DT["company"].copy()
+        min_n = st.slider("Min observations per company", 10, 100, 20, step=10)
+        co = co[co["n"] >= min_n]
+        order = st.radio("Show", ["Most estimated", "Most self-reported"],
+                         horizontal=True)
+        asc = order == "Most self-reported"
+        ranked = co.sort_values("estimated_share", ascending=asc).head(20)
+        ranked = ranked.assign(**{"estimated %": (ranked["estimated_share"] * 100).round(1)})
+        st.dataframe(
+            ranked[["company_name", "industry", "estimated %", "n"]],
+            use_container_width=True, hide_index=True)
+
+    with t_geo:
+        geo = DT["country"].copy()
+        geo = geo[geo["n"] >= 5000].sort_values("estimated_share")
+        show = pd.concat([geo.head(10), geo.tail(10)])
+        fig = px.bar(show, x="estimated_share", y="headquarter_country",
+                     orientation="h", height=650,
+                     labels={"estimated_share": "Share estimated",
+                             "headquarter_country": ""})
+        fig.update_xaxes(tickformat=".0%")
+        fig.update_layout(yaxis={"categoryorder": "total descending"})
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Estimated share by headquarter country (≥5,000 "
+                   "observations). EU/developed HQs disclose most directly.")
+
 
 # ============================== SQL QUERY ================================== #
 elif page == "SQL Query":

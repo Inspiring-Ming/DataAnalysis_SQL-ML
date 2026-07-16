@@ -28,6 +28,7 @@ OUT = os.path.join(HERE, "..", "outputs")
 # join/lookup keys to index per table (only created if the column exists)
 KEYS = {
     "perm_id", "metric_name", "industry", "cluster", "pillar", "disclosure",
+    "headquarter_country",
 }
 
 # raw observation tables excluded from the slim (hosted) build -- too large.

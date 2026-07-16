@@ -136,6 +136,38 @@ def disclosure_gap(long: pd.DataFrame) -> pd.DataFrame:
     return sub
 
 
+def disclosure_breakdowns(meta: pd.DataFrame) -> dict:
+    """Link the reported-vs-estimated gap to industry / metric / company / country.
+
+    Reads the tidy per-observation table (long_clean.parquet), joins industry
+    from meta, and returns four aggregate frames keyed on estimated_share =
+    P(ESTIMATED). Each carries an observation count `n` so the app can filter
+    out thin, noisy groups.
+    """
+    lc = pd.read_parquet(os.path.join(OUT, "long_clean.parquet"))[
+        ["perm_id", "company_name", "disclosure", "metric_name", "pillar",
+         "headquarter_country"]
+    ]
+    ind = meta[["perm_id", "industry"]].drop_duplicates()
+    df = lc.merge(ind, on="perm_id", how="left")
+    df["est"] = (df["disclosure"] == "ESTIMATED").astype(int)
+
+    def agg(keys):
+        g = df.groupby(keys)["est"].agg(estimated_share="mean", n="count")
+        return g.reset_index()
+
+    by_industry = agg(["industry", "pillar"])
+    by_metric_industry = agg(["metric_name", "pillar", "industry"])
+    by_company = agg(["perm_id", "company_name", "industry"])
+    by_country = agg(["headquarter_country"])
+    return {
+        "disclosure_by_industry": by_industry,
+        "disclosure_by_metric_industry": by_metric_industry,
+        "disclosure_by_company": by_company,
+        "disclosure_by_country": by_country,
+    }
+
+
 def main() -> None:
     print("loading artifacts ...")
     wide, meta, catalog = load_artifacts()
@@ -157,6 +189,11 @@ def main() -> None:
     prof = industry_profile(wide, meta)
     prof.to_parquet(os.path.join(OUT, "industry_profile.parquet"))
     print(f"  profiled {len(prof)} industries")
+
+    print("building disclosure breakdowns ...")
+    for name, frame in disclosure_breakdowns(meta).items():
+        frame.to_parquet(os.path.join(OUT, f"{name}.parquet"))
+        print(f"  {name}: {len(frame):,} rows")
 
     print("\nDONE. Analysis artifacts cached to outputs/")
 

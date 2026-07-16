@@ -98,7 +98,7 @@ DB with the raw observation tables) · `make app` · `make clean`.
 | **PCA Explorer** | 2D projection (colour by industry/cluster), scree plot, per-component loadings |
 | **Clusters** | KMeans archetypes in PCA space + industry composition (tune k) |
 | **Industry Profiles** | z-scored E/S/G heatmap; rank industries on any metric |
-| **Disclosure Gap** | Reported vs estimated share by pillar and by metric |
+| **Disclosure Gap** | Reported vs estimated share by pillar/metric, with drill-downs by **industry, metric × industry, company, and geography** |
 | **SQL Query** | Read-only `SELECT`/`WITH` console over `esg.db`, with example queries and CSV export |
 
 ---
