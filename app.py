@@ -365,10 +365,14 @@ elif page == "Disclosure Gap":
     # ---- drill-downs: link the gap to industry / metric / company / country ----
     st.markdown("---")
     st.subheader("Drill down: who reports, who relies on estimates")
-    st.caption(
-        "Estimated share = P(ESTIMATED) per group. Policy *flags* are almost "
-        "always reported; quantitative environmental metrics are mostly "
-        "estimated — so the gap concentrates by pillar, industry and geography."
+    st.info(
+        "**All charts below use one measure: % estimated** (share of "
+        "observations modelled by the provider rather than company-reported). "
+        "A **high bar = relies on estimates**; a **low bar = self-reports**. "
+        "Reported % is just its mirror (100 − estimated %), so a single axis "
+        "captures both. Policy *flags* are almost always reported; quantitative "
+        "environmental metrics are mostly estimated — the gap concentrates by "
+        "pillar, industry and geography."
     )
 
     @st.cache_data(show_spinner=False)
@@ -395,13 +399,13 @@ elif page == "Disclosure Gap":
         di = di[di["n"] >= 3000].sort_values("estimated_share")
         show = pd.concat([di.head(10), di.tail(10)])
         fig = px.bar(show, x="estimated_share", y="industry", orientation="h",
-                     height=650, labels={"estimated_share": "Share estimated",
+                     height=650, labels={"estimated_share": "% estimated",
                                          "industry": ""})
         fig.update_xaxes(tickformat=".0%")
         fig.update_layout(yaxis={"categoryorder": "total descending"})
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("Most self-reported (top) vs most estimate-reliant (bottom) "
-                   "industries; industries with ≥3,000 observations.")
+        st.caption("Low bars = self-report most (top); high bars = rely on "
+                   "estimates (bottom). Industries with ≥3,000 data points.")
 
     with t_mi:
         mi = DT["metric_industry"]
@@ -414,26 +418,39 @@ elif page == "Disclosure Gap":
             st.info("Too few observations for this metric across industries.")
         else:
             fig = px.bar(sub, x="estimated_share", y="industry", orientation="h",
-                         height=700, labels={"estimated_share": "Share estimated",
+                         height=700, labels={"estimated_share": "% estimated",
                                              "industry": ""})
             fig.update_xaxes(tickformat=".0%")
             fig.update_layout(yaxis={"categoryorder": "total descending"})
             st.plotly_chart(fig, use_container_width=True)
-            st.caption(f"Estimated share of **{metric}** by industry "
-                       "(≥50 observations). Even one metric splits by sector.")
+            st.caption(f"% estimated for **{metric}** by industry "
+                       "(≥50 data points). Even one metric splits by sector.")
 
     with t_co:
         co = DT["company"].copy()
-        min_n = st.slider("Min observations per company", 10, 100, 20, step=10)
+        min_n = st.slider(
+            "Minimum data points per company", 10, 100, 20, step=10,
+            help="A company's % estimated is only reliable if it has enough "
+                 "ESG observations. This filters out thinly-covered companies.")
         co = co[co["n"] >= min_n]
-        order = st.radio("Show", ["Most estimated", "Most self-reported"],
-                         horizontal=True)
+        order = st.radio(
+            "Rank by", ["Most estimated", "Most self-reported"], horizontal=True,
+            help="Most estimated = highest % estimated (provider-modelled). "
+                 "Most self-reported = lowest % estimated.")
         asc = order == "Most self-reported"
         ranked = co.sort_values("estimated_share", ascending=asc).head(20)
-        ranked = ranked.assign(**{"estimated %": (ranked["estimated_share"] * 100).round(1)})
+        ranked = ranked.assign(**{
+            "% estimated": (ranked["estimated_share"] * 100).round(1),
+            "data points": ranked["n"],
+        })
         st.dataframe(
-            ranked[["company_name", "industry", "estimated %", "n"]],
+            ranked[["company_name", "industry", "% estimated", "data points"]],
             use_container_width=True, hide_index=True)
+        st.caption(
+            "**% estimated** = share of this company's ESG observations that are "
+            "provider-*estimated* (the rest are company-*reported*). "
+            "**data points** = how many ESG observations the company has — "
+            "higher means the % is more reliable.")
 
     with t_geo:
         geo = DT["country"].copy()
@@ -441,13 +458,14 @@ elif page == "Disclosure Gap":
         show = pd.concat([geo.head(10), geo.tail(10)])
         fig = px.bar(show, x="estimated_share", y="headquarter_country",
                      orientation="h", height=650,
-                     labels={"estimated_share": "Share estimated",
+                     labels={"estimated_share": "% estimated",
                              "headquarter_country": ""})
         fig.update_xaxes(tickformat=".0%")
         fig.update_layout(yaxis={"categoryorder": "total descending"})
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("Estimated share by headquarter country (≥5,000 "
-                   "observations). EU/developed HQs disclose most directly.")
+        st.caption("Low bars = self-report most (top); high bars = rely on "
+                   "estimates (bottom). Countries with ≥5,000 data points. "
+                   "EU/developed HQs disclose most directly.")
 
 
 # ============================== SQL QUERY ================================== #
