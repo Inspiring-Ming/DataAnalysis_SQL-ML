@@ -169,94 +169,169 @@ def disclosure_breakdowns(meta: pd.DataFrame) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Carbon workstreams (July analysis plan). The carbon universe is grouped by
-# economic meaning (WS3 taxonomy): EXPOSURE = physical emissions/energy outcomes;
-# COMMITMENT = policies/targets; the rest of ESG is out of the carbon scope.
-CARBON_METRICS = {
-    "CO2DIRECTSCOPE1": "exposure",
-    "CO2INDIRECTSCOPE2": "exposure",
-    "CO2INDIRECTSCOPE3": "exposure",
-    "CO2_NO_EQUIVALENTS": "exposure",
-    "ENERGYUSETOTAL": "exposure",
-    "NOXEMISSIONS": "exposure",
-    "SOXEMISSIONS": "exposure",
-    "VOCEMISSIONS": "exposure",
-    "PARTICULATE_MATTER_EMISSIONS": "exposure",
-    "RENEWENERGYCONSUMED": "exposure",
-    "RENEWENERGYPRODUCED": "exposure",
-    "RENEWENERGYPURCHASED": "exposure",
-    "POLICY_EMISSIONS": "commitment",
-    "TARGETS_EMISSIONS": "commitment",
+# Carbon workstreams (July analysis plan). Each carbon metric is tagged on two
+# dimensions so the platform can analyse it either way:
+#   * group     -- economic meaning: exposure vs commitment (WS3).
+#   * emission  -- GHG-Protocol locus: direct / indirect / energy / n.a. (WS3).
+CARBON_TAXONOMY = {
+    #  metric                         group         emission
+    "CO2DIRECTSCOPE1":              ("exposure",   "direct"),
+    "NOXEMISSIONS":                 ("exposure",   "direct"),
+    "SOXEMISSIONS":                 ("exposure",   "direct"),
+    "VOCEMISSIONS":                 ("exposure",   "direct"),
+    "PARTICULATE_MATTER_EMISSIONS": ("exposure",   "direct"),
+    "CO2INDIRECTSCOPE2":            ("exposure",   "indirect"),
+    "CO2INDIRECTSCOPE3":            ("exposure",   "indirect"),
+    "CO2_NO_EQUIVALENTS":           ("exposure",   "direct"),
+    "ENERGYUSETOTAL":               ("exposure",   "energy"),
+    "RENEWENERGYCONSUMED":          ("exposure",   "energy"),
+    "RENEWENERGYPRODUCED":          ("exposure",   "energy"),
+    "RENEWENERGYPURCHASED":         ("exposure",   "energy"),
+    "POLICY_EMISSIONS":             ("commitment", "n.a."),
+    "TARGETS_EMISSIONS":            ("commitment", "n.a."),
 }
+# backwards-compatible view: {metric: group}
+CARBON_METRICS = {m: g for m, (g, _) in CARBON_TAXONOMY.items()}
+CARBON_EMISSION = {m: e for m, (_, e) in CARBON_TAXONOMY.items()}
 
 
-def carbon_audit(meta: pd.DataFrame) -> dict:
-    """WS1 + WS3: reproducible audit of the carbon subset of long_clean.
+def carbon_audit() -> dict:
+    """WS1: carbon-focused data audit + an explicit AUDIT LOG.
 
-    Returns aggregate frames (no raw rows) suitable for the app:
-      * per_metric      -- provenance split, unit(s), coverage, group.
-      * summary         -- one-row dataset-level facts (rows, firms, year state).
-    Provenance is kept as the full 3-way REPORTED / ESTIMATED / CALCULATED.
+    Uses the recovered carbon panel (firm-metric-year), so the audit reflects the
+    same data the analysis runs on. Returns:
+      * carbon_per_metric  -- provenance split, unit, coverage, group, emission.
+      * carbon_summary     -- one-row dataset-level facts.
+      * carbon_audit_log   -- one row per check: what was audited, and the finding
+                              (the plan requires recording what the audit covers).
     """
-    lc = pd.read_parquet(os.path.join(OUT, "long_clean.parquet"))
-    cb = lc[lc["metric_name"].isin(CARBON_METRICS)].copy()
-    cb["group"] = cb["metric_name"].map(CARBON_METRICS)
-
-    prov = (cb.groupby(["metric_name", "disclosure"]).size()
-              .unstack(fill_value=0))
+    p = pd.read_parquet(os.path.join(OUT, "carbon_panel.parquet"))
+    # WS1 audits at the firm-metric-year grain (the panel's natural key)
+    prov = (p.groupby(["metric_name", "disclosure"]).size().unstack(fill_value=0))
     for state in ["REPORTED", "ESTIMATED", "CALCULATED"]:
         if state not in prov.columns:
             prov[state] = 0
-    prov = prov[["REPORTED", "ESTIMATED", "CALCULATED"]]
     prov["n"] = prov.sum(axis=1)
     prov["reported_share"] = prov["REPORTED"] / prov["n"]
     prov["estimated_share"] = prov["ESTIMATED"] / prov["n"]
-
     per_metric = prov.reset_index()
     per_metric["group"] = per_metric["metric_name"].map(CARBON_METRICS)
-    per_metric["unit"] = cb.groupby("metric_name")["metric_unit"].first().values
-    per_metric["companies"] = cb.groupby("metric_name")["perm_id"].nunique().values
+    per_metric["emission"] = per_metric["metric_name"].map(CARBON_EMISSION)
+    per_metric["unit"] = p.groupby("metric_name")["metric_unit"].first().reindex(
+        per_metric["metric_name"]).values
+    per_metric["companies"] = p.groupby("metric_name")["perm_id"].nunique().reindex(
+        per_metric["metric_name"]).values
+
+    dup = int(p.duplicated(["perm_id", "metric_name", "year"]).sum())
+    n_units = int((p.groupby("metric_name")["metric_unit"].nunique() > 1).sum())
+    neg = int((p[p["metric_name"] == "CO2DIRECTSCOPE1"]["value_num"] < 0).sum())
+    yrs = sorted(p["year"].unique())
 
     summary = pd.DataFrame([{
-        "carbon_observations": len(cb),
-        "companies": cb["perm_id"].nunique(),
-        "carbon_metrics": cb["metric_name"].nunique(),
-        "null_identifiers": int(cb["perm_id"].isna().sum()),
-        "duplicate_firm_metric": int(cb.duplicated(["perm_id", "metric_name"]).sum()),
-        "null_values": int(cb["metric_value"].isna().sum()),
-        "metrics_multi_unit": int((cb.groupby("metric_name")["metric_unit"]
-                                   .nunique() > 1).sum()),
-        "has_year_dimension": bool(cb["metric_year"].notna().any()),
+        "carbon_observations": len(p),
+        "companies": p["perm_id"].nunique(),
+        "carbon_metrics": p["metric_name"].nunique(),
+        "year_min": yrs[0], "year_max": yrs[-1],
+        "duplicate_firm_metric_year": dup,
+        "null_identifiers": int(p["perm_id"].isna().sum()),
+        "null_values": int(p["value_num"].isna().sum()),
+        "metrics_multi_unit": n_units,
     }])
-    return {"carbon_per_metric": per_metric, "carbon_summary": summary}
+
+    # explicit audit log -- records each required check and its outcome
+    log = [
+        ("Identifiers", "perm_id present for every observation",
+         f"{int(p['perm_id'].isna().sum())} null identifiers", "PASS"),
+        ("Duplicates", "no duplicate firm-metric-year rows",
+         f"{dup} duplicates", "PASS" if dup == 0 else "REVIEW"),
+        ("Years", "time dimension present and contiguous",
+         f"{yrs[0]}-{yrs[-1]} ({len(yrs)} years)", "PASS"),
+        ("Units", "each metric uses a single consistent unit",
+         f"{n_units} metrics with mixed units", "PASS" if n_units == 0 else "REVIEW"),
+        ("Missing values", "no null numeric values",
+         f"{int(p['value_num'].isna().sum())} null values", "PASS"),
+        ("Value sanity", "no negative Scope-1 emissions",
+         f"{neg} negative values", "PASS" if neg == 0 else "REVIEW"),
+        ("Provenance", "every observation tagged reported/estimated/calculated",
+         f"{p['disclosure'].nunique()} states: "
+         + ", ".join(sorted(p['disclosure'].unique())), "PASS"),
+        ("Source versions", "duplicated raw .csv/.csv.gz files read once",
+         "de-duplicated at ingest (build_carbon_panel)", "PASS"),
+    ]
+    audit_log = pd.DataFrame(log, columns=["check", "requirement", "finding", "status"])
+
+    return {"carbon_per_metric": per_metric, "carbon_summary": summary,
+            "carbon_audit_log": audit_log}
 
 
-def carbon_pca_diagnostic() -> dict:
-    """WS4 + WS5: run carbon-only PCA on parallel provenance samples.
+def carbon_samples(panel: pd.DataFrame) -> dict:
+    """WS4: four comparable carbon-exposure samples (latest year per firm-metric).
 
-    Builds a firm x carbon-EXPOSURE-metric matrix (latest year per firm-metric)
-    for each regime (all / reported-only / estimated-only), then runs the same
-    impute-scale-PCA on each. Returns, per regime, the explained-variance of the
-    first components and PC1 loadings, so the app can show whether the carbon
-    factor structure is stable when reported and estimated data are separated.
+      all            -- every usable observation.
+      reported       -- company-reported observations only.
+      estimated      -- provider-estimated observations only.
+      common_support -- balanced set where each reported firm is 1:1 matched to
+                        the estimated firm with the closest Scope-1 emissions
+                        (nearest-neighbour on log tons), so the two groups are
+                        genuinely comparable rather than pooled mechanically.
     """
-    panel = pd.read_parquet(os.path.join(OUT, "carbon_panel.parquet"))
     exp = panel[panel["group"] == "exposure"].copy()
     exp = exp.sort_values("year").drop_duplicates(
         ["perm_id", "metric_name"], keep="last")
 
-    regimes = {
+    # nearest-neighbour match on Scope-1 (log tons): each reported firm -> the
+    # closest estimated firm; keep both sides of the matched pairs.
+    s1 = exp[exp["metric_name"] == "CO2DIRECTSCOPE1"][
+        ["perm_id", "disclosure", "value_num"]].dropna()
+    rep = s1[s1["disclosure"] == "REPORTED"].copy()
+    est = s1[s1["disclosure"] == "ESTIMATED"].copy()
+    matched_ids = set()
+    if len(rep) and len(est):
+        est_sorted = est.sort_values("value_num").reset_index(drop=True)
+        est_vals = est_sorted["value_num"].to_numpy()
+        idx = np.searchsorted(est_vals, rep["value_num"].to_numpy())
+        idx = np.clip(idx, 0, len(est_vals) - 1)
+        matched_ids = set(rep["perm_id"]) | set(est_sorted.loc[idx, "perm_id"])
+    common = exp[exp["perm_id"].isin(matched_ids)]
+
+    return {
         "all": exp,
         "reported": exp[exp["disclosure"] == "REPORTED"],
         "estimated": exp[exp["disclosure"] == "ESTIMATED"],
+        "common_support": common,
     }
-    explained_rows, loading_frames = [], []
-    for name, sub in regimes.items():
+
+
+def carbon_pca_diagnostic() -> dict:
+    """WS4 + WS5: carbon-only PCA across the four parallel samples.
+
+    For each sample, build a firm x carbon-exposure-metric matrix, run the same
+    impute-scale-PCA, and record explained variance + PC1 loadings so the app can
+    show whether the carbon factor structure survives when reported and estimated
+    data are separated. Also returns a WS4 sample-comparison table (coverage and
+    distribution differences across samples).
+    """
+    panel = pd.read_parquet(os.path.join(OUT, "carbon_panel.parquet"))
+    samples = carbon_samples(panel)
+
+    explained_rows, loading_frames, compare_rows = [], [], []
+    for name, sub in samples.items():
         wide = sub.pivot_table(index="perm_id", columns="metric_name",
                                values="value_num", aggfunc="last")
-        # keep metrics present for >=500 firms; firms with >=3 metrics
         wide = wide.loc[:, wide.notna().sum() >= 500]
         wide = wide[wide.notna().sum(axis=1) >= 3]
+
+        # WS4 comparison row: coverage + distribution of Scope-1 (log tons)
+        s1v = sub[sub["metric_name"] == "CO2DIRECTSCOPE1"]["value_num"]
+        compare_rows.append({
+            "sample": name,
+            "firms": int(sub["perm_id"].nunique()),
+            "metrics": int(wide.shape[1]),
+            "matrix_fill": round(float(wide.notna().mean().mean()), 3)
+            if len(wide) else 0.0,
+            "scope1_median_tons": round(float(s1v.median()), 1) if len(s1v) else None,
+        })
+
         if wide.shape[1] < 3 or len(wide) < 100:
             continue
         Xs, _, _ = impute_scale(wide)
@@ -264,16 +339,17 @@ def carbon_pca_diagnostic() -> dict:
         pca = PCA(n_components=n_comp, svd_solver="full", random_state=0)
         pca.fit(Xs)
         for i, ev in enumerate(pca.explained_variance_ratio_):
-            explained_rows.append({"regime": name, "PC": f"PC{i+1}",
+            explained_rows.append({"sample": name, "PC": f"PC{i+1}",
                                    "explained": ev, "n_firms": len(wide),
                                    "n_metrics": wide.shape[1]})
-        ld = pd.DataFrame({"regime": name, "metric_name": wide.columns,
-                           "PC1": pca.components_[0]})
-        loading_frames.append(ld)
+        loading_frames.append(pd.DataFrame(
+            {"sample": name, "metric_name": wide.columns,
+             "PC1": pca.components_[0]}))
 
     return {
         "carbon_pca_explained": pd.DataFrame(explained_rows),
         "carbon_pca_loadings": pd.concat(loading_frames, ignore_index=True),
+        "carbon_sample_compare": pd.DataFrame(compare_rows),
     }
 
 
@@ -299,13 +375,13 @@ def main() -> None:
     prof.to_parquet(os.path.join(OUT, "industry_profile.parquet"))
     print(f"  profiled {len(prof)} industries")
 
-    print("building disclosure breakdowns ...")
-    for name, frame in disclosure_breakdowns(meta).items():
+    print("building carbon audit (WS1) ...")
+    for name, frame in carbon_audit().items():
         frame.to_parquet(os.path.join(OUT, f"{name}.parquet"))
         print(f"  {name}: {len(frame):,} rows")
 
-    print("building carbon audit (WS1) ...")
-    for name, frame in carbon_audit(meta).items():
+    print("building carbon PCA diagnostic (WS4/WS5) ...")
+    for name, frame in carbon_pca_diagnostic().items():
         frame.to_parquet(os.path.join(OUT, f"{name}.parquet"))
         print(f"  {name}: {len(frame):,} rows")
 

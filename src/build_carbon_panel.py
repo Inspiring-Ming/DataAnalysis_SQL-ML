@@ -21,7 +21,7 @@ import os
 
 import pandas as pd
 
-from src.analysis import CARBON_METRICS
+from src.analysis import CARBON_METRICS, CARBON_EMISSION
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "outputs")
@@ -59,6 +59,7 @@ def build() -> None:
     df["year"] = pd.to_datetime(df["metric_year"], errors="coerce").dt.year
     df["value_num"] = pd.to_numeric(df["metric_value"], errors="coerce")
     df["group"] = df["metric_name"].map(CARBON_METRICS)
+    df["emission"] = df["metric_name"].map(CARBON_EMISSION)
     df = df.dropna(subset=["year"]).copy()
     df["year"] = df["year"].astype(int)
 
@@ -75,15 +76,15 @@ def build() -> None:
                   on="perm_id", how="left")
 
     keep = ["perm_id", "company_name", "industry", "headquarter_country",
-            "metric_name", "group", "year", "disclosure", "value_num",
-            "metric_unit", "reported_date"]
+            "metric_name", "group", "emission", "year", "disclosure",
+            "value_num", "metric_unit", "reported_date"]
     panel = df[keep].reset_index(drop=True)
     panel.to_parquet(os.path.join(OUT, "carbon_panel.parquet"))
 
     # app-friendly aggregate: coverage + provenance mix per metric-year
     panel["is_reported"] = (panel["disclosure"] == "REPORTED").astype(int)
     panel["is_estimated"] = (panel["disclosure"] == "ESTIMATED").astype(int)
-    by_year = (panel.groupby(["metric_name", "group", "year"])
+    by_year = (panel.groupby(["metric_name", "group", "emission", "year"])
                .agg(observations=("perm_id", "count"),
                     companies=("perm_id", "nunique"),
                     reported_share=("is_reported", "mean"),

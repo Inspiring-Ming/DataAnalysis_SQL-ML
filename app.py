@@ -89,12 +89,42 @@ def scores_with_meta(top_n_industries: int | None = 12):
     return df
 
 
+# shared loaders for the carbon workstream pages (WS1-WS5)
+@st.cache_data(show_spinner=False)
+def _carbon_audit():
+    return (pd.read_parquet(f"{OUT}/carbon_summary.parquet"),
+            pd.read_parquet(f"{OUT}/carbon_per_metric.parquet"),
+            pd.read_parquet(f"{OUT}/carbon_audit_log.parquet"))
+
+
+@st.cache_data(show_spinner=False)
+def _carbon_by_year():
+    return pd.read_parquet(f"{OUT}/carbon_panel_by_year.parquet")
+
+
 # --------------------------------------------------------------------------- #
 st.sidebar.title("ESG Landscape Explorer")
-page = st.sidebar.radio(
-    "View",
-    ["Overview", "PCA Explorer", "Clusters", "Industry Profiles",
-     "Disclosure Gap", "Carbon Data Audit", "Carbon PCA", "SQL Query"],
+
+# Two clearly separated sections: general ESG exploration, and the carbon
+# research workstreams (July analysis plan). A prefix keeps the flat radio
+# visually grouped; PAGES maps the label back to a plain page key.
+PAGES = {
+    "Overview": "Overview",
+    "ESG · PCA Explorer": "PCA Explorer",
+    "ESG · Clusters": "Clusters",
+    "ESG · Industry Profiles": "Industry Profiles",
+    "Carbon · WS1 Data Audit": "Carbon Data Audit",
+    "Carbon · WS2 Panel & Trends": "Carbon Panel",
+    "Carbon · WS3 Taxonomy": "Carbon Taxonomy",
+    "Carbon · WS4 Samples": "Carbon Samples",
+    "Carbon · WS5 PCA Diagnostic": "Carbon PCA",
+    "SQL Query": "SQL Query",
+}
+choice = st.sidebar.radio("View", list(PAGES), label_visibility="collapsed")
+page = PAGES[choice]
+st.sidebar.caption(
+    "**ESG ·** exploratory analysis of all 95 metrics.\n\n"
+    "**Carbon ·** the carbon-risk research workstreams (WS1–WS5)."
 )
 st.sidebar.markdown("---")
 st.sidebar.caption(
@@ -305,377 +335,241 @@ elif page == "Industry Profiles":
     st.plotly_chart(fig2, use_container_width=True)
 
 
-# ============================ DISCLOSURE =================================== #
-elif page == "Disclosure Gap":
-    st.title("Disclosure Gap: Reported vs Estimated")
-    st.markdown(
-        "ESG data mixes company-**reported** figures with provider-"
-        "**estimated** ones. The reliance on estimates is itself a "
-        "data-quality signal."
-    )
-
-    @st.cache_data(show_spinner="Computing disclosure gap…")
-    def disclosure():
-        long = pd.read_parquet(f"{OUT}/disclosure_long.parquet")
-        g = (
-            long.groupby(["pillar", "disclosure"]).size()
-            .unstack(fill_value=0)
-        )
-        g["est_share"] = g.get("ESTIMATED", 0) / g.sum(axis=1)
-        return g, long
-
-    g, long = disclosure()
-    g = g.reset_index()
-    g["pillar_name"] = g["pillar"].map(PILLAR_NAME)
-    c1, c2 = st.columns(2)
-    with c1:
-        fig = px.bar(
-            g, x="pillar_name", y="est_share",
-            color="pillar_name",
-            color_discrete_map={PILLAR_NAME[k]: v
-                                for k, v in PILLAR_COLOR.items()},
-            labels={"est_share": "Share estimated", "pillar_name": "Pillar"},
-        )
-        fig.update_yaxes(tickformat=".0%")
-        st.plotly_chart(fig, use_container_width=True)
-    with c2:
-        melt = g.melt(id_vars="pillar_name",
-                      value_vars=["REPORTED", "ESTIMATED"],
-                      var_name="type", value_name="n")
-        fig2 = px.bar(melt, x="pillar_name", y="n", color="type",
-                      barmode="group", labels={"n": "Observations",
-                                               "pillar_name": "Pillar"})
-        st.plotly_chart(fig2, use_container_width=True)
-
-    st.subheader("Most estimate-reliant metrics")
-    mm = (
-        long.groupby(["metric_name", "disclosure"]).size()
-        .unstack(fill_value=0)
-    )
-    mm["est_share"] = mm.get("ESTIMATED", 0) / mm.sum(axis=1)
-    mm["total"] = mm.get("ESTIMATED", 0) + mm.get("REPORTED", 0)
-    top = mm[mm["total"] > 5000].sort_values("est_share", ascending=False).head(15)
-    fig3 = px.bar(top.reset_index(), x="est_share", y="metric_name",
-                  orientation="h", height=550,
-                  labels={"est_share": "Share estimated", "metric_name": ""})
-    fig3.update_xaxes(tickformat=".0%")
-    fig3.update_layout(yaxis={"categoryorder": "total ascending"})
-    st.plotly_chart(fig3, use_container_width=True)
-
-    # ---- drill-downs: link the gap to industry / metric / company / country ----
-    st.markdown("---")
-    st.subheader("Drill down: who reports, who relies on estimates")
-    st.info(
-        "**All charts below use one measure: % estimated** (share of "
-        "observations modelled by the provider rather than company-reported). "
-        "A **high bar = relies on estimates**; a **low bar = self-reports**. "
-        "Reported % is just its mirror (100 − estimated %), so a single axis "
-        "captures both. Policy *flags* are almost always reported; quantitative "
-        "environmental metrics are mostly estimated — the gap concentrates by "
-        "pillar, industry and geography."
-    )
-
-    @st.cache_data(show_spinner=False)
-    def disclosure_tables():
-        return {
-            "industry": pd.read_parquet(f"{OUT}/disclosure_by_industry.parquet"),
-            "metric_industry": pd.read_parquet(
-                f"{OUT}/disclosure_by_metric_industry.parquet"),
-            "company": pd.read_parquet(f"{OUT}/disclosure_by_company.parquet"),
-            "country": pd.read_parquet(f"{OUT}/disclosure_by_country.parquet"),
-        }
-
-    DT = disclosure_tables()
-    t_ind, t_mi, t_co, t_geo = st.tabs(
-        ["By industry", "By metric × industry", "By company", "By geography"])
-
-    with t_ind:
-        di = DT["industry"].copy()
-        # collapse pillar rows into one weighted estimated_share per industry
-        di["est_n"] = di["estimated_share"] * di["n"]
-        di = di.groupby("industry", as_index=False).agg(
-            est_n=("est_n", "sum"), n=("n", "sum"))
-        di["estimated_share"] = di["est_n"] / di["n"]
-        di = di[di["n"] >= 3000].sort_values("estimated_share")
-        show = pd.concat([di.head(10), di.tail(10)])
-        fig = px.bar(show, x="estimated_share", y="industry", orientation="h",
-                     height=650, labels={"estimated_share": "% estimated",
-                                         "industry": ""})
-        fig.update_xaxes(tickformat=".0%")
-        fig.update_layout(yaxis={"categoryorder": "total descending"})
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption("Low bars = self-report most (top); high bars = rely on "
-                   "estimates (bottom). Industries with ≥3,000 data points.")
-
-    with t_mi:
-        mi = DT["metric_industry"]
-        metrics = sorted(mi["metric_name"].unique())
-        default = metrics.index("CO2DIRECTSCOPE1") if "CO2DIRECTSCOPE1" in metrics else 0
-        metric = st.selectbox("Metric", metrics, index=default)
-        sub = mi[(mi["metric_name"] == metric) & (mi["n"] >= 50)] \
-            .sort_values("estimated_share")
-        if sub.empty:
-            st.info("Too few observations for this metric across industries.")
-        else:
-            fig = px.bar(sub, x="estimated_share", y="industry", orientation="h",
-                         height=700, labels={"estimated_share": "% estimated",
-                                             "industry": ""})
-            fig.update_xaxes(tickformat=".0%")
-            fig.update_layout(yaxis={"categoryorder": "total descending"})
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(f"% estimated for **{metric}** by industry "
-                       "(≥50 data points). Even one metric splits by sector.")
-
-    with t_co:
-        co = DT["company"].copy()
-        min_n = st.slider(
-            "Minimum data points per company", 10, 100, 20, step=10,
-            help="A company's % estimated is only reliable if it has enough "
-                 "ESG observations. This filters out thinly-covered companies.")
-        co = co[co["n"] >= min_n]
-        order = st.radio(
-            "Rank by", ["Most estimated", "Most self-reported"], horizontal=True,
-            help="Most estimated = highest % estimated (provider-modelled). "
-                 "Most self-reported = lowest % estimated.")
-        asc = order == "Most self-reported"
-        ranked = co.sort_values("estimated_share", ascending=asc).head(20)
-        ranked = ranked.assign(**{
-            "% estimated": (ranked["estimated_share"] * 100).round(1),
-            "data points": ranked["n"],
-        })
-        st.dataframe(
-            ranked[["company_name", "industry", "% estimated", "data points"]],
-            use_container_width=True, hide_index=True)
-        st.caption(
-            "**% estimated** = share of this company's ESG observations that are "
-            "provider-*estimated* (the rest are company-*reported*). "
-            "**data points** = how many ESG observations the company has — "
-            "higher means the % is more reliable.")
-
-    with t_geo:
-        geo = DT["country"].copy()
-        geo = geo[geo["n"] >= 5000].sort_values("estimated_share")
-        show = pd.concat([geo.head(10), geo.tail(10)])
-        fig = px.bar(show, x="estimated_share", y="headquarter_country",
-                     orientation="h", height=650,
-                     labels={"estimated_share": "% estimated",
-                             "headquarter_country": ""})
-        fig.update_xaxes(tickformat=".0%")
-        fig.update_layout(yaxis={"categoryorder": "total descending"})
-        st.plotly_chart(fig, use_container_width=True)
-        st.caption("Low bars = self-report most (top); high bars = rely on "
-                   "estimates (bottom). Countries with ≥5,000 data points. "
-                   "EU/developed HQs disclose most directly.")
-
-
-# ========================== CARBON DATA AUDIT ============================= #
+# ===================== CARBON · WS1 DATA AUDIT ============================= #
 elif page == "Carbon Data Audit":
-    st.title("Carbon Data Audit")
+    st.title("WS1 · Carbon Data Audit")
     st.markdown(
-        "**Workstream 1 of the carbon research plan.** Before studying carbon "
-        "risk we verify *what is actually in the data*: which carbon metrics "
-        "exist, whether each value is company-**reported**, provider-"
-        "**estimated**, or **calculated**, and whether the structure is genuine "
-        "rather than a cleaning artefact."
+        "Before studying carbon risk we verify *what is in the carbon data* and "
+        "**record the audit**: identifiers, duplicates, years, units, missing "
+        "values, value sanity, provenance, and source-version handling. Scope is "
+        "carbon metrics only."
     )
 
-    @st.cache_data(show_spinner=False)
-    def carbon_audit_tables():
-        return (
-            pd.read_parquet(f"{OUT}/carbon_summary.parquet"),
-            pd.read_parquet(f"{OUT}/carbon_per_metric.parquet"),
-        )
-
-    summ, pm = carbon_audit_tables()
+    summ, pm, log = _carbon_audit()
     s = summ.iloc[0]
 
-    st.subheader("Data-integrity checks")
+    st.subheader("Coverage")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Carbon observations", f"{int(s['carbon_observations']):,}")
     c2.metric("Companies", f"{int(s['companies']):,}")
     c3.metric("Carbon metrics", int(s["carbon_metrics"]))
-    c4.metric("Duplicate firm-metric", int(s["duplicate_firm_metric"]),
-              help="0 means each company has at most one value per metric.")
-    c5, c6, c7, c8 = st.columns(4)
-    c5.metric("Null identifiers", int(s["null_identifiers"]))
-    c6.metric("Null values", int(s["null_values"]))
-    c7.metric("Metrics w/ mixed units", int(s["metrics_multi_unit"]),
-              help="0 means every metric uses a single consistent unit.")
-    c8.metric("Panel years", "2016–2024",
-              help="The raw source carries a full time dimension, recovered "
-                   "into a firm–metric–year panel (plan WS2).")
+    c4.metric("Panel years", f"{int(s['year_min'])}–{int(s['year_max'])}")
 
-    st.info(
-        "**A longitudinal panel is available (plan WS2).** The processed "
-        "snapshot dropped the year, but the raw Clarity AI files carry "
-        "`metric_year` for every observation. The recovered carbon panel spans "
-        "**2016–2024** with provenance preserved, enabling reporting-over-time "
-        "and estimated→reported transition analysis."
+    st.subheader("Audit log")
+    st.caption("Each required check, what it verifies, and the finding on this "
+               "extract. Recorded so the audit is reproducible and reviewable.")
+    st.dataframe(log, use_container_width=True, hide_index=True)
+    st.caption("All checks PASS: the carbon subset is well-formed (clean "
+               "identifiers, single units, no duplicates or impossible values).")
+
+
+# ================== CARBON · WS2 PANEL & TRENDS =========================== #
+elif page == "Carbon Panel":
+    st.title("WS2 · Panel & Source-Type Trends")
+    st.markdown(
+        "Every carbon observation is categorised by its **source type** — "
+        "company-**reported**, provider-**estimated**, or **calculated** — and "
+        "analysed together on the 2016–2024 panel, so coverage and the overall "
+        "reporting trend are comparable across metrics."
     )
 
-    st.subheader("Provenance by carbon metric")
-    st.caption(
-        "Share of each metric's observations that are company-**reported** vs "
-        "provider-**estimated** vs **calculated**. Physical emissions are "
-        "overwhelmingly estimated; renewables and commitments are mostly "
-        "reported — so 'carbon exposure' and 'carbon data quality' are "
-        "entangled, exactly the plan's motivation."
-    )
-    grp = st.radio("Metric group", ["all", "exposure", "commitment"],
-                   horizontal=True,
-                   help="exposure = physical emissions/energy outcomes; "
-                        "commitment = policies/targets (plan WS3 taxonomy).")
-    view = pm if grp == "all" else pm[pm["group"] == grp]
-    view = view[view["n"] >= 100].copy()   # drop negligible metrics (e.g. n=2)
+    by_year = _carbon_by_year()
 
-    melt = view.melt(
-        id_vars=["metric_name"], value_vars=["REPORTED", "ESTIMATED", "CALCULATED"],
-        var_name="provenance", value_name="count")
-    fig = px.bar(
-        melt, x="count", y="metric_name", color="provenance", orientation="h",
-        height=520, labels={"count": "observations", "metric_name": ""},
-        color_discrete_map={"REPORTED": "#2e8b57", "ESTIMATED": "#d9822b",
-                            "CALCULATED": "#4682b4"})
-    fig.update_layout(barmode="stack", yaxis={"categoryorder": "total ascending"})
+    st.subheader("Source-type mix over time (all carbon metrics)")
+    st.caption("Composition of every carbon observation each year. A growing "
+               "green share = firms increasingly report rather than rely on "
+               "provider estimates.")
+    mix = by_year[by_year["year"] <= 2023].copy()
+    mix["reported"] = mix["reported_share"] * mix["observations"]
+    mix["estimated"] = mix["estimated_share"] * mix["observations"]
+    mix["other"] = mix["observations"] - mix["reported"] - mix["estimated"]
+    agg = mix.groupby("year")[["reported", "estimated", "other"]].sum().reset_index()
+    m2 = agg.melt(id_vars="year", var_name="source", value_name="obs")
+    fig = px.area(m2, x="year", y="obs", color="source",
+                  labels={"obs": "observations", "year": ""},
+                  color_discrete_map={"reported": "#2e8b57",
+                                      "estimated": "#d9822b", "other": "#4682b4"})
     st.plotly_chart(fig, use_container_width=True)
 
-    # ---- WS2: reporting over time (from the recovered panel) ----
-    st.subheader("Disclosure over time (plan WS2)")
-    st.caption(
-        "Share of observations that are company-**reported** each year, from the "
-        "recovered 2016–2024 panel. A rising line means firms are moving from "
-        "provider estimates to direct reporting — the transition the plan wants "
-        "to study."
-    )
-
-    @st.cache_data(show_spinner=False)
-    def carbon_by_year():
-        return pd.read_parquet(f"{OUT}/carbon_panel_by_year.parquet")
-
-    by_year = carbon_by_year()
+    st.subheader("Reported share over time, by metric")
+    st.caption("Per-metric trend. Rising = disclosure improving for that metric.")
     metrics_ts = sorted(by_year["metric_name"].unique())
     default_ts = [m for m in ["CO2DIRECTSCOPE1", "CO2INDIRECTSCOPE2",
                               "ENERGYUSETOTAL"] if m in metrics_ts]
-    pick = st.multiselect("Metrics", metrics_ts, default=default_ts or metrics_ts[:3])
-    ts = by_year[by_year["metric_name"].isin(pick)].copy()
-    # 2024 is a partial early-vintage year; flag rather than mislead
-    ts = ts[ts["year"] <= 2023]
+    pick = st.multiselect("Metrics", metrics_ts,
+                          default=default_ts or metrics_ts[:3])
+    ts = by_year[(by_year["metric_name"].isin(pick)) & (by_year["year"] <= 2023)]
     if not ts.empty:
-        fig_ts = px.line(
-            ts, x="year", y="reported_share", color="metric_name", markers=True,
-            labels={"reported_share": "% reported", "year": "",
-                    "metric_name": "metric"})
-        fig_ts.update_yaxes(tickformat=".0%")
-        st.plotly_chart(fig_ts, use_container_width=True)
-        st.caption("2024 excluded as a partial vintage. Higher = more "
-                   "self-reported that year.")
+        fig2 = px.line(ts, x="year", y="reported_share", color="metric_name",
+                       markers=True, labels={"reported_share": "% reported",
+                                             "year": "", "metric_name": "metric"})
+        fig2.update_yaxes(tickformat=".0%")
+        st.plotly_chart(fig2, use_container_width=True)
+        st.caption("2024 excluded as a partial vintage.")
     else:
         st.info("Select at least one metric.")
 
-    st.subheader("Metric dictionary (plan WS3 taxonomy)")
-    tbl = view.assign(**{
-        "reported %": (view["reported_share"] * 100).round(1),
-        "estimated %": (view["estimated_share"] * 100).round(1),
-    }).rename(columns={"metric_name": "metric", "n": "observations"})
-    st.dataframe(
-        tbl[["metric", "group", "unit", "observations", "companies",
-             "reported %", "estimated %"]].sort_values(
-                 ["group", "observations"], ascending=[True, False]),
-        use_container_width=True, hide_index=True)
-    st.caption(
-        "**exposure** = physical emissions/energy the firm emits or uses; "
-        "**commitment** = policies/targets the firm asserts. These are distinct "
-        "economic concepts and are analysed separately, not as one carbon score."
+
+# ==================== CARBON · WS3 TAXONOMY =============================== #
+elif page == "Carbon Taxonomy":
+    st.title("WS3 · Carbon Metric Taxonomy")
+    st.markdown(
+        "Carbon metrics are organised on two dimensions so they are not treated "
+        "as one undifferentiated score:\n\n"
+        "- **Economic meaning** — *exposure* (physical emissions/energy) vs "
+        "*commitment* (policies/targets).\n"
+        "- **Emission locus** — *direct* (Scope 1 & direct air pollutants), "
+        "*indirect* (Scope 2 & 3), or *energy* use."
     )
 
-    with st.expander("Scope note — what stays in the research pipeline (plan WS6)"):
-        st.markdown(
-            "This platform delivers the plan's **diagnostic** workstreams "
-            "(WS1–WS5): data audit, the 2016–2024 panel, the carbon taxonomy, "
-            "parallel provenance samples, and the carbon-only PCA.\n\n"
-            "**WS6 (financial-identifier crosswalk + look-ahead-bias timing "
-            "rules) is intentionally not on the dashboard.** It links carbon "
-            "data to stock returns/financing costs for the econometric asset-"
-            "pricing tests — that belongs in the private research pipeline, and "
-            "return-linked financial data should not sit behind a shared public "
-            "password. The panel does carry `reported_date` for ~46% of "
-            "observations, so realistic information-availability timing *can* be "
-            "reconstructed later in that pipeline."
-        )
+    _, pm, _ = _carbon_audit()
+    pm = pm[pm["n"] >= 100].copy()
+
+    st.subheader("Reported vs estimated, by emission locus")
+    st.caption("Direct emissions are the least self-reported; energy the most. "
+               "Data quality differs systematically by emission type.")
+    dim = pm[pm["group"] == "exposure"].copy()
+    byloc = dim.groupby("emission").apply(
+        lambda x: pd.Series({
+            "reported_share": (x["reported_share"] * x["n"]).sum() / x["n"].sum(),
+            "observations": x["n"].sum()}), include_groups=False).reset_index()
+    fig = px.bar(byloc, x="emission", y="reported_share", color="emission",
+                 text=(byloc["reported_share"] * 100).round(0).astype(int)
+                 .astype(str) + "%",
+                 labels={"reported_share": "% reported", "emission": ""})
+    fig.update_yaxes(tickformat=".0%")
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Metric dictionary")
+    tbl = pm.assign(**{
+        "reported %": (pm["reported_share"] * 100).round(1),
+        "estimated %": (pm["estimated_share"] * 100).round(1),
+    }).rename(columns={"metric_name": "metric", "n": "observations"})
+    st.dataframe(
+        tbl[["metric", "group", "emission", "unit", "observations",
+             "companies", "reported %", "estimated %"]].sort_values(
+                 ["group", "emission", "observations"],
+                 ascending=[True, True, False]),
+        use_container_width=True, hide_index=True)
 
 
-# ============================== CARBON PCA ================================ #
-elif page == "Carbon PCA":
-    st.title("Carbon PCA — exposure factor across data regimes")
+# ==================== CARBON · WS4 SAMPLES =============================== #
+elif page == "Carbon Samples":
+    st.title("WS4 · Four Comparable Samples")
     st.markdown(
-        "**Workstreams 4–5 of the carbon plan.** The broad 95-metric ESG PCA "
-        "mixes emissions with policy and governance. Here the PCA is restricted "
-        "to **carbon-exposure variables only** (Scope 1/2/3, energy, air "
-        "pollutants, renewables) and run separately on three provenance "
-        "**regimes** — *all*, *reported-only*, *estimated-only* — to test whether "
-        "the carbon factor structure survives when reported and estimated data "
-        "are separated."
+        "Reported and estimated carbon observations are generated differently, "
+        "so they are not pooled mechanically. Four parallel samples let us see "
+        "how coverage and distributions differ:\n\n"
+        "- **all** — every usable observation.\n"
+        "- **reported** — company-reported only.\n"
+        "- **estimated** — provider-estimated only.\n"
+        "- **common-support** — each reported firm 1:1 matched to the estimated "
+        "firm with the closest Scope-1 emissions, so the groups are comparable."
+    )
+
+    comp = pd.read_parquet(f"{OUT}/carbon_sample_compare.parquet")
+    show = comp.rename(columns={
+        "sample": "sample", "firms": "firms", "metrics": "metrics",
+        "matrix_fill": "matrix fill", "scope1_median_tons": "Scope-1 median (t)"})
+    st.subheader("Sample comparison")
+    st.dataframe(show, use_container_width=True, hide_index=True)
+    st.caption(
+        "Reported firms have a **~19× higher** median Scope-1 than estimated "
+        "firms (8,207 vs 439 t) — estimation fills in the smaller, more opaque "
+        "firms. Matching brings the common-support median in between, giving a "
+        "like-for-like comparison set."
+    )
+
+    fig = px.bar(comp, x="sample", y="firms", color="sample", text="firms",
+                 labels={"firms": "firms in sample", "sample": ""})
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("Pooling 'all' would blend true emissions with model estimates; "
+               "the split + matched samples make provenance testable (WS5).")
+
+
+# ===================== CARBON · WS5 PCA DIAGNOSTIC ======================== #
+elif page == "Carbon PCA":
+    st.title("WS5 · Carbon PCA Diagnostic")
+    st.markdown(
+        "The broad 95-metric ESG PCA mixes emissions with policy and governance. "
+        "Here the PCA is restricted to **carbon-exposure variables only** (Scope "
+        "1/2/3, energy, air pollutants, renewables) and run on each of the four "
+        "**samples** from WS4 — *all*, *reported*, *estimated*, *common-support* "
+        "— to test whether the carbon factor survives when reported and estimated "
+        "data are separated."
     )
 
     @st.cache_data(show_spinner=False)
     def carbon_pca_tables():
-        return (
-            pd.read_parquet(f"{OUT}/carbon_pca_explained.parquet"),
-            pd.read_parquet(f"{OUT}/carbon_pca_loadings.parquet"),
-        )
+        return (pd.read_parquet(f"{OUT}/carbon_pca_explained.parquet"),
+                pd.read_parquet(f"{OUT}/carbon_pca_loadings.parquet"))
 
     cexp, cload = carbon_pca_tables()
-    REGIME_NAME = {"all": "All observations", "reported": "Reported only",
-                   "estimated": "Estimated only"}
+    SAMPLE_NAME = {"all": "All", "reported": "Reported",
+                   "estimated": "Estimated", "common_support": "Common-support"}
 
     st.subheader("How strong is the single carbon factor? (PC1 variance)")
     pc1 = cexp[cexp["PC"] == "PC1"].copy()
-    pc1["regime_name"] = pc1["regime"].map(REGIME_NAME)
-    fig = px.bar(pc1, x="regime_name", y="explained", color="regime_name",
+    pc1["sample_name"] = pc1["sample"].map(SAMPLE_NAME)
+    fig = px.bar(pc1, x="sample_name", y="explained", color="sample_name",
                  text=pc1["explained"].mul(100).round(0).astype(int).astype(str) + "%",
-                 labels={"explained": "PC1 % of variance", "regime_name": ""},
+                 labels={"explained": "PC1 % of variance", "sample_name": ""},
                  hover_data=["n_firms", "n_metrics"])
     fig.update_yaxes(tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
     st.caption(
-        "A dominant PC1 in every regime means carbon exposure is a strong single "
+        "A dominant PC1 in every sample means carbon exposure is a strong single "
         "factor whether or not estimates are included."
     )
 
-    st.subheader("Scree — variance explained per component, by regime")
-    fig2 = px.line(cexp, x="PC", y="explained", color="regime",
-                   markers=True, labels={"explained": "% variance", "PC": ""})
+    st.subheader("Scree — variance explained per component, by sample")
+    cexp2 = cexp.copy()
+    cexp2["sample_name"] = cexp2["sample"].map(SAMPLE_NAME)
+    fig2 = px.line(cexp2, x="PC", y="explained", color="sample_name",
+                   markers=True, labels={"explained": "% variance", "PC": "",
+                                         "sample_name": "sample"})
     fig2.update_yaxes(tickformat=".0%")
     st.plotly_chart(fig2, use_container_width=True)
 
     st.subheader("Is the carbon factor the same shape? (PC1 loadings)")
     st.caption(
-        "Each metric's weight in PC1, per regime. If the bars line up across "
-        "regimes, the carbon factor is stable (plan Decision Point 1: carbon "
-        "exposure). Note renewables are absent from the estimated regime — "
-        "providers estimate emissions, not renewable-energy use."
+        "Each metric's weight in PC1, per sample. Bars lining up across samples "
+        "means the carbon factor is stable (plan Decision Point 1: carbon "
+        "exposure). Renewables are absent from the estimated sample — providers "
+        "estimate emissions, not renewable-energy use."
     )
     cl = cload.copy()
-    cl["regime_name"] = cl["regime"].map(REGIME_NAME)
-    fig3 = px.bar(cl, x="PC1", y="metric_name", color="regime_name",
+    cl["sample_name"] = cl["sample"].map(SAMPLE_NAME)
+    fig3 = px.bar(cl, x="PC1", y="metric_name", color="sample_name",
                   orientation="h", barmode="group", height=650,
                   labels={"PC1": "PC1 loading", "metric_name": "",
-                          "regime_name": "regime"})
+                          "sample_name": "sample"})
     fig3.update_layout(yaxis={"categoryorder": "total ascending"})
     st.plotly_chart(fig3, use_container_width=True)
 
     with st.expander("Interpretation & method"):
         st.markdown(
-            "- **Sample.** Firm × carbon-exposure-metric matrix, latest year per "
-            "firm-metric, from the 2016–2024 panel. Metrics kept if present for "
-            "≥500 firms; firms kept with ≥3 metrics.\n"
+            "- **Samples.** Firm × carbon-exposure-metric matrix, latest year "
+            "per firm-metric, from the 2016–2024 panel (metrics with ≥500 firms; "
+            "firms with ≥3 metrics).\n"
             "- **Pipeline.** Signed-log heavy-tailed magnitudes → median-impute "
             "→ z-score → ±8σ clip → PCA (same as the main ESG PCA, carbon-only).\n"
             "- **Reading.** PC1 loads evenly on Scope 1/2/3, energy and air "
-            "pollutants in all regimes — a genuine *carbon-intensity* factor, "
-            "cleaner than the broad ESG PC1. The reported-only sample adds "
-            "renewables structure; the estimated-only sample lacks renewables "
-            "entirely (a provenance artefact, not an economic one)."
+            "pollutants in every sample — a genuine *carbon-intensity* factor, "
+            "cleaner than the broad ESG PC1. The factor is broadly **stable** "
+            "across provenance, pointing toward the plan's Decision Point 1 "
+            "(carbon-exposure result)."
+        )
+
+    with st.expander("WS6 — what stays in the research pipeline"):
+        st.markdown(
+            "This platform delivers the **diagnostic** workstreams (WS1–WS5). "
+            "**WS6 (financial-identifier crosswalk + look-ahead-bias timing "
+            "rules for the asset-pricing tests) stays in the private research "
+            "pipeline** — it links carbon data to returns/financing costs, which "
+            "should not sit behind a shared public password. The panel carries "
+            "`reported_date` for ~46% of observations, so realistic "
+            "information-availability timing can be reconstructed there later."
         )
 
 
