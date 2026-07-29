@@ -12,3 +12,4 @@ outputs/esg_full.db
 
 # NOTE: outputs/*.parquet ARE committed on purpose — the app reads them at
 # runtime and does not regenerate them. Do not ignore them.
+outputs/carbon_panel.parquet

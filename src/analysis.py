@@ -168,6 +168,115 @@ def disclosure_breakdowns(meta: pd.DataFrame) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# Carbon workstreams (July analysis plan). The carbon universe is grouped by
+# economic meaning (WS3 taxonomy): EXPOSURE = physical emissions/energy outcomes;
+# COMMITMENT = policies/targets; the rest of ESG is out of the carbon scope.
+CARBON_METRICS = {
+    "CO2DIRECTSCOPE1": "exposure",
+    "CO2INDIRECTSCOPE2": "exposure",
+    "CO2INDIRECTSCOPE3": "exposure",
+    "CO2_NO_EQUIVALENTS": "exposure",
+    "ENERGYUSETOTAL": "exposure",
+    "NOXEMISSIONS": "exposure",
+    "SOXEMISSIONS": "exposure",
+    "VOCEMISSIONS": "exposure",
+    "PARTICULATE_MATTER_EMISSIONS": "exposure",
+    "RENEWENERGYCONSUMED": "exposure",
+    "RENEWENERGYPRODUCED": "exposure",
+    "RENEWENERGYPURCHASED": "exposure",
+    "POLICY_EMISSIONS": "commitment",
+    "TARGETS_EMISSIONS": "commitment",
+}
+
+
+def carbon_audit(meta: pd.DataFrame) -> dict:
+    """WS1 + WS3: reproducible audit of the carbon subset of long_clean.
+
+    Returns aggregate frames (no raw rows) suitable for the app:
+      * per_metric      -- provenance split, unit(s), coverage, group.
+      * summary         -- one-row dataset-level facts (rows, firms, year state).
+    Provenance is kept as the full 3-way REPORTED / ESTIMATED / CALCULATED.
+    """
+    lc = pd.read_parquet(os.path.join(OUT, "long_clean.parquet"))
+    cb = lc[lc["metric_name"].isin(CARBON_METRICS)].copy()
+    cb["group"] = cb["metric_name"].map(CARBON_METRICS)
+
+    prov = (cb.groupby(["metric_name", "disclosure"]).size()
+              .unstack(fill_value=0))
+    for state in ["REPORTED", "ESTIMATED", "CALCULATED"]:
+        if state not in prov.columns:
+            prov[state] = 0
+    prov = prov[["REPORTED", "ESTIMATED", "CALCULATED"]]
+    prov["n"] = prov.sum(axis=1)
+    prov["reported_share"] = prov["REPORTED"] / prov["n"]
+    prov["estimated_share"] = prov["ESTIMATED"] / prov["n"]
+
+    per_metric = prov.reset_index()
+    per_metric["group"] = per_metric["metric_name"].map(CARBON_METRICS)
+    per_metric["unit"] = cb.groupby("metric_name")["metric_unit"].first().values
+    per_metric["companies"] = cb.groupby("metric_name")["perm_id"].nunique().values
+
+    summary = pd.DataFrame([{
+        "carbon_observations": len(cb),
+        "companies": cb["perm_id"].nunique(),
+        "carbon_metrics": cb["metric_name"].nunique(),
+        "null_identifiers": int(cb["perm_id"].isna().sum()),
+        "duplicate_firm_metric": int(cb.duplicated(["perm_id", "metric_name"]).sum()),
+        "null_values": int(cb["metric_value"].isna().sum()),
+        "metrics_multi_unit": int((cb.groupby("metric_name")["metric_unit"]
+                                   .nunique() > 1).sum()),
+        "has_year_dimension": bool(cb["metric_year"].notna().any()),
+    }])
+    return {"carbon_per_metric": per_metric, "carbon_summary": summary}
+
+
+def carbon_pca_diagnostic() -> dict:
+    """WS4 + WS5: run carbon-only PCA on parallel provenance samples.
+
+    Builds a firm x carbon-EXPOSURE-metric matrix (latest year per firm-metric)
+    for each regime (all / reported-only / estimated-only), then runs the same
+    impute-scale-PCA on each. Returns, per regime, the explained-variance of the
+    first components and PC1 loadings, so the app can show whether the carbon
+    factor structure is stable when reported and estimated data are separated.
+    """
+    panel = pd.read_parquet(os.path.join(OUT, "carbon_panel.parquet"))
+    exp = panel[panel["group"] == "exposure"].copy()
+    exp = exp.sort_values("year").drop_duplicates(
+        ["perm_id", "metric_name"], keep="last")
+
+    regimes = {
+        "all": exp,
+        "reported": exp[exp["disclosure"] == "REPORTED"],
+        "estimated": exp[exp["disclosure"] == "ESTIMATED"],
+    }
+    explained_rows, loading_frames = [], []
+    for name, sub in regimes.items():
+        wide = sub.pivot_table(index="perm_id", columns="metric_name",
+                               values="value_num", aggfunc="last")
+        # keep metrics present for >=500 firms; firms with >=3 metrics
+        wide = wide.loc[:, wide.notna().sum() >= 500]
+        wide = wide[wide.notna().sum(axis=1) >= 3]
+        if wide.shape[1] < 3 or len(wide) < 100:
+            continue
+        Xs, _, _ = impute_scale(wide)
+        n_comp = min(5, Xs.shape[1])
+        pca = PCA(n_components=n_comp, svd_solver="full", random_state=0)
+        pca.fit(Xs)
+        for i, ev in enumerate(pca.explained_variance_ratio_):
+            explained_rows.append({"regime": name, "PC": f"PC{i+1}",
+                                   "explained": ev, "n_firms": len(wide),
+                                   "n_metrics": wide.shape[1]})
+        ld = pd.DataFrame({"regime": name, "metric_name": wide.columns,
+                           "PC1": pca.components_[0]})
+        loading_frames.append(ld)
+
+    return {
+        "carbon_pca_explained": pd.DataFrame(explained_rows),
+        "carbon_pca_loadings": pd.concat(loading_frames, ignore_index=True),
+    }
+
+
 def main() -> None:
     print("loading artifacts ...")
     wide, meta, catalog = load_artifacts()
@@ -192,6 +301,11 @@ def main() -> None:
 
     print("building disclosure breakdowns ...")
     for name, frame in disclosure_breakdowns(meta).items():
+        frame.to_parquet(os.path.join(OUT, f"{name}.parquet"))
+        print(f"  {name}: {len(frame):,} rows")
+
+    print("building carbon audit (WS1) ...")
+    for name, frame in carbon_audit(meta).items():
         frame.to_parquet(os.path.join(OUT, f"{name}.parquet"))
         print(f"  {name}: {len(frame):,} rows")
 

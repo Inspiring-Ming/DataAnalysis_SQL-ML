@@ -32,7 +32,8 @@ KEYS = {
 }
 
 # raw observation tables excluded from the slim (hosted) build -- too large.
-HEAVY = {"disclosure_long", "long_clean"}
+# carbon_panel (2.5M rows) stays local; the by-year aggregate ships.
+HEAVY = {"disclosure_long", "long_clean", "carbon_panel"}
 
 
 def build(db_path: str, slim: bool) -> None:

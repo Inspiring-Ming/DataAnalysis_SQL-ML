@@ -94,7 +94,7 @@ st.sidebar.title("ESG Landscape Explorer")
 page = st.sidebar.radio(
     "View",
     ["Overview", "PCA Explorer", "Clusters", "Industry Profiles",
-     "Disclosure Gap", "SQL Query"],
+     "Disclosure Gap", "Carbon Data Audit", "Carbon PCA", "SQL Query"],
 )
 st.sidebar.markdown("---")
 st.sidebar.caption(
@@ -466,6 +466,217 @@ elif page == "Disclosure Gap":
         st.caption("Low bars = self-report most (top); high bars = rely on "
                    "estimates (bottom). Countries with ≥5,000 data points. "
                    "EU/developed HQs disclose most directly.")
+
+
+# ========================== CARBON DATA AUDIT ============================= #
+elif page == "Carbon Data Audit":
+    st.title("Carbon Data Audit")
+    st.markdown(
+        "**Workstream 1 of the carbon research plan.** Before studying carbon "
+        "risk we verify *what is actually in the data*: which carbon metrics "
+        "exist, whether each value is company-**reported**, provider-"
+        "**estimated**, or **calculated**, and whether the structure is genuine "
+        "rather than a cleaning artefact."
+    )
+
+    @st.cache_data(show_spinner=False)
+    def carbon_audit_tables():
+        return (
+            pd.read_parquet(f"{OUT}/carbon_summary.parquet"),
+            pd.read_parquet(f"{OUT}/carbon_per_metric.parquet"),
+        )
+
+    summ, pm = carbon_audit_tables()
+    s = summ.iloc[0]
+
+    st.subheader("Data-integrity checks")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Carbon observations", f"{int(s['carbon_observations']):,}")
+    c2.metric("Companies", f"{int(s['companies']):,}")
+    c3.metric("Carbon metrics", int(s["carbon_metrics"]))
+    c4.metric("Duplicate firm-metric", int(s["duplicate_firm_metric"]),
+              help="0 means each company has at most one value per metric.")
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("Null identifiers", int(s["null_identifiers"]))
+    c6.metric("Null values", int(s["null_values"]))
+    c7.metric("Metrics w/ mixed units", int(s["metrics_multi_unit"]),
+              help="0 means every metric uses a single consistent unit.")
+    c8.metric("Panel years", "2016–2024",
+              help="The raw source carries a full time dimension, recovered "
+                   "into a firm–metric–year panel (plan WS2).")
+
+    st.info(
+        "**A longitudinal panel is available (plan WS2).** The processed "
+        "snapshot dropped the year, but the raw Clarity AI files carry "
+        "`metric_year` for every observation. The recovered carbon panel spans "
+        "**2016–2024** with provenance preserved, enabling reporting-over-time "
+        "and estimated→reported transition analysis."
+    )
+
+    st.subheader("Provenance by carbon metric")
+    st.caption(
+        "Share of each metric's observations that are company-**reported** vs "
+        "provider-**estimated** vs **calculated**. Physical emissions are "
+        "overwhelmingly estimated; renewables and commitments are mostly "
+        "reported — so 'carbon exposure' and 'carbon data quality' are "
+        "entangled, exactly the plan's motivation."
+    )
+    grp = st.radio("Metric group", ["all", "exposure", "commitment"],
+                   horizontal=True,
+                   help="exposure = physical emissions/energy outcomes; "
+                        "commitment = policies/targets (plan WS3 taxonomy).")
+    view = pm if grp == "all" else pm[pm["group"] == grp]
+    view = view[view["n"] >= 100].copy()   # drop negligible metrics (e.g. n=2)
+
+    melt = view.melt(
+        id_vars=["metric_name"], value_vars=["REPORTED", "ESTIMATED", "CALCULATED"],
+        var_name="provenance", value_name="count")
+    fig = px.bar(
+        melt, x="count", y="metric_name", color="provenance", orientation="h",
+        height=520, labels={"count": "observations", "metric_name": ""},
+        color_discrete_map={"REPORTED": "#2e8b57", "ESTIMATED": "#d9822b",
+                            "CALCULATED": "#4682b4"})
+    fig.update_layout(barmode="stack", yaxis={"categoryorder": "total ascending"})
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ---- WS2: reporting over time (from the recovered panel) ----
+    st.subheader("Disclosure over time (plan WS2)")
+    st.caption(
+        "Share of observations that are company-**reported** each year, from the "
+        "recovered 2016–2024 panel. A rising line means firms are moving from "
+        "provider estimates to direct reporting — the transition the plan wants "
+        "to study."
+    )
+
+    @st.cache_data(show_spinner=False)
+    def carbon_by_year():
+        return pd.read_parquet(f"{OUT}/carbon_panel_by_year.parquet")
+
+    by_year = carbon_by_year()
+    metrics_ts = sorted(by_year["metric_name"].unique())
+    default_ts = [m for m in ["CO2DIRECTSCOPE1", "CO2INDIRECTSCOPE2",
+                              "ENERGYUSETOTAL"] if m in metrics_ts]
+    pick = st.multiselect("Metrics", metrics_ts, default=default_ts or metrics_ts[:3])
+    ts = by_year[by_year["metric_name"].isin(pick)].copy()
+    # 2024 is a partial early-vintage year; flag rather than mislead
+    ts = ts[ts["year"] <= 2023]
+    if not ts.empty:
+        fig_ts = px.line(
+            ts, x="year", y="reported_share", color="metric_name", markers=True,
+            labels={"reported_share": "% reported", "year": "",
+                    "metric_name": "metric"})
+        fig_ts.update_yaxes(tickformat=".0%")
+        st.plotly_chart(fig_ts, use_container_width=True)
+        st.caption("2024 excluded as a partial vintage. Higher = more "
+                   "self-reported that year.")
+    else:
+        st.info("Select at least one metric.")
+
+    st.subheader("Metric dictionary (plan WS3 taxonomy)")
+    tbl = view.assign(**{
+        "reported %": (view["reported_share"] * 100).round(1),
+        "estimated %": (view["estimated_share"] * 100).round(1),
+    }).rename(columns={"metric_name": "metric", "n": "observations"})
+    st.dataframe(
+        tbl[["metric", "group", "unit", "observations", "companies",
+             "reported %", "estimated %"]].sort_values(
+                 ["group", "observations"], ascending=[True, False]),
+        use_container_width=True, hide_index=True)
+    st.caption(
+        "**exposure** = physical emissions/energy the firm emits or uses; "
+        "**commitment** = policies/targets the firm asserts. These are distinct "
+        "economic concepts and are analysed separately, not as one carbon score."
+    )
+
+    with st.expander("Scope note — what stays in the research pipeline (plan WS6)"):
+        st.markdown(
+            "This platform delivers the plan's **diagnostic** workstreams "
+            "(WS1–WS5): data audit, the 2016–2024 panel, the carbon taxonomy, "
+            "parallel provenance samples, and the carbon-only PCA.\n\n"
+            "**WS6 (financial-identifier crosswalk + look-ahead-bias timing "
+            "rules) is intentionally not on the dashboard.** It links carbon "
+            "data to stock returns/financing costs for the econometric asset-"
+            "pricing tests — that belongs in the private research pipeline, and "
+            "return-linked financial data should not sit behind a shared public "
+            "password. The panel does carry `reported_date` for ~46% of "
+            "observations, so realistic information-availability timing *can* be "
+            "reconstructed later in that pipeline."
+        )
+
+
+# ============================== CARBON PCA ================================ #
+elif page == "Carbon PCA":
+    st.title("Carbon PCA — exposure factor across data regimes")
+    st.markdown(
+        "**Workstreams 4–5 of the carbon plan.** The broad 95-metric ESG PCA "
+        "mixes emissions with policy and governance. Here the PCA is restricted "
+        "to **carbon-exposure variables only** (Scope 1/2/3, energy, air "
+        "pollutants, renewables) and run separately on three provenance "
+        "**regimes** — *all*, *reported-only*, *estimated-only* — to test whether "
+        "the carbon factor structure survives when reported and estimated data "
+        "are separated."
+    )
+
+    @st.cache_data(show_spinner=False)
+    def carbon_pca_tables():
+        return (
+            pd.read_parquet(f"{OUT}/carbon_pca_explained.parquet"),
+            pd.read_parquet(f"{OUT}/carbon_pca_loadings.parquet"),
+        )
+
+    cexp, cload = carbon_pca_tables()
+    REGIME_NAME = {"all": "All observations", "reported": "Reported only",
+                   "estimated": "Estimated only"}
+
+    st.subheader("How strong is the single carbon factor? (PC1 variance)")
+    pc1 = cexp[cexp["PC"] == "PC1"].copy()
+    pc1["regime_name"] = pc1["regime"].map(REGIME_NAME)
+    fig = px.bar(pc1, x="regime_name", y="explained", color="regime_name",
+                 text=pc1["explained"].mul(100).round(0).astype(int).astype(str) + "%",
+                 labels={"explained": "PC1 % of variance", "regime_name": ""},
+                 hover_data=["n_firms", "n_metrics"])
+    fig.update_yaxes(tickformat=".0%")
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(
+        "A dominant PC1 in every regime means carbon exposure is a strong single "
+        "factor whether or not estimates are included."
+    )
+
+    st.subheader("Scree — variance explained per component, by regime")
+    fig2 = px.line(cexp, x="PC", y="explained", color="regime",
+                   markers=True, labels={"explained": "% variance", "PC": ""})
+    fig2.update_yaxes(tickformat=".0%")
+    st.plotly_chart(fig2, use_container_width=True)
+
+    st.subheader("Is the carbon factor the same shape? (PC1 loadings)")
+    st.caption(
+        "Each metric's weight in PC1, per regime. If the bars line up across "
+        "regimes, the carbon factor is stable (plan Decision Point 1: carbon "
+        "exposure). Note renewables are absent from the estimated regime — "
+        "providers estimate emissions, not renewable-energy use."
+    )
+    cl = cload.copy()
+    cl["regime_name"] = cl["regime"].map(REGIME_NAME)
+    fig3 = px.bar(cl, x="PC1", y="metric_name", color="regime_name",
+                  orientation="h", barmode="group", height=650,
+                  labels={"PC1": "PC1 loading", "metric_name": "",
+                          "regime_name": "regime"})
+    fig3.update_layout(yaxis={"categoryorder": "total ascending"})
+    st.plotly_chart(fig3, use_container_width=True)
+
+    with st.expander("Interpretation & method"):
+        st.markdown(
+            "- **Sample.** Firm × carbon-exposure-metric matrix, latest year per "
+            "firm-metric, from the 2016–2024 panel. Metrics kept if present for "
+            "≥500 firms; firms kept with ≥3 metrics.\n"
+            "- **Pipeline.** Signed-log heavy-tailed magnitudes → median-impute "
+            "→ z-score → ±8σ clip → PCA (same as the main ESG PCA, carbon-only).\n"
+            "- **Reading.** PC1 loads evenly on Scope 1/2/3, energy and air "
+            "pollutants in all regimes — a genuine *carbon-intensity* factor, "
+            "cleaner than the broad ESG PC1. The reported-only sample adds "
+            "renewables structure; the estimated-only sample lacks renewables "
+            "entirely (a provenance artefact, not an economic one)."
+        )
 
 
 # ============================== SQL QUERY ================================== #
