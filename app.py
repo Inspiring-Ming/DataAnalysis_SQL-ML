@@ -359,11 +359,17 @@ elif page == "Carbon Data Audit":
 
     st.subheader("Each metric in detail")
     st.markdown(
-        "One row per carbon metric, showing how many companies report it, how "
-        "many years it spans, how it is sourced, and the size of the numbers. "
-        "This is the ground truth the rest of the analysis relies on."
+        "One row per carbon metric, showing how many companies have it, how many "
+        "years it spans, how it is sourced, and the size of the numbers. The "
+        "three source columns — **reported**, **estimated**, **calculated** — "
+        "add up to 100% for each metric. This is the ground truth the rest of "
+        "the analysis relies on."
     )
     view = pm[pm["n"] >= 100].copy()
+    # source shares from the actual counts, so all three always sum to 100%
+    view["rep"] = (view["REPORTED"] / view["n"] * 100).round(0).astype(int)
+    view["est"] = (view["ESTIMATED"] / view["n"] * 100).round(0).astype(int)
+    view["calc"] = (view["CALCULATED"] / view["n"] * 100).round(0).astype(int)
     tbl = view.assign(**{
         "metric": view["metric_name"],
         "type": view["group"],
@@ -372,20 +378,23 @@ elif page == "Carbon Data Audit":
         "coverage": (view["coverage"] * 100).round(0).astype(int).astype(str) + "%",
         "years": view["first_year"].astype(int).astype(str) + "–"
                  + view["last_year"].astype(int).astype(str),
-        "reported %": (view["reported_share"] * 100).round(0).astype(int),
-        "estimated %": (view["estimated_share"] * 100).round(0).astype(int),
+        "reported %": view["rep"],
+        "estimated %": view["est"],
+        "calculated %": view["calc"],
         "median value": view["value_median"].round(1),
     })
     st.dataframe(
         tbl[["metric", "type", "unit", "companies", "coverage", "years",
-             "reported %", "estimated %", "median value"]].sort_values(
-                 "companies", ascending=False),
+             "reported %", "estimated %", "calculated %", "median value"]]
+        .sort_values("companies", ascending=False),
         use_container_width=True, hide_index=True)
     st.caption(
-        "The emission metrics (Scope 1/2/3, NOx, SOx) cover almost every "
-        "company; renewable-energy and target metrics cover only a small "
-        "fraction. Most metrics are mainly provider-estimated, not "
-        "company-reported."
+        "How to read the source columns: emission metrics (Scope 1/2/3, NOx, "
+        "SOx) are mostly **estimated** by the provider; policy and target "
+        "metrics are **reported** or **calculated**, never estimated. Emission "
+        "metrics cover almost every company, while renewable-energy and target "
+        "metrics cover only a small fraction. (A fourth state, 'adjusted', "
+        "appears on just 2 observations and is negligible.)"
     )
 
     st.subheader("How much data is missing")
