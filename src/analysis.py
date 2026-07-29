@@ -217,18 +217,26 @@ def carbon_audit() -> dict:
     per_metric = prov.reset_index()
     per_metric["group"] = per_metric["metric_name"].map(CARBON_METRICS)
     per_metric["emission"] = per_metric["metric_name"].map(CARBON_EMISSION)
-    per_metric["unit"] = p.groupby("metric_name")["metric_unit"].first().reindex(
-        per_metric["metric_name"]).values
-    per_metric["companies"] = p.groupby("metric_name")["perm_id"].nunique().reindex(
-        per_metric["metric_name"]).values
 
-    # coverage = share of ALL firms that have this metric (latest year). This is
-    # the real "missing data" story: most cells are absent, not null.
+    # per-metric EDA (WS1): coverage basics, year span, value distribution.
+    eda = p.groupby("metric_name").agg(
+        unit=("metric_unit", "first"),
+        companies=("perm_id", "nunique"),
+        first_year=("year", "min"),
+        last_year=("year", "max"),
+        years_covered=("year", "nunique"),
+        value_median=("value_num", "median"),
+        value_min=("value_num", "min"),
+        value_max=("value_num", "max"),
+    ).reset_index()
+    per_metric = per_metric.merge(eda, on="metric_name", how="left")
+
+    # coverage = share of ALL firms that have this metric (any year). This is the
+    # real "missing data" story: most cells are absent, not null.
     latest = p.sort_values("year").drop_duplicates(
         ["perm_id", "metric_name"], keep="last")
     n_firms = p["perm_id"].nunique()
-    per_metric["coverage"] = (
-        per_metric["companies"] / n_firms).round(3)
+    per_metric["coverage"] = (per_metric["companies"] / n_firms).round(3)
 
     dup = int(p.duplicated(["perm_id", "metric_name", "year"]).sum())
     n_units = int((p.groupby("metric_name")["metric_unit"].nunique() > 1).sum())

@@ -110,21 +110,22 @@ st.sidebar.title("ESG Landscape Explorer")
 # visually grouped; PAGES maps the label back to a plain page key.
 PAGES = {
     "Overview": "Overview",
-    "ESG · PCA Explorer": "PCA Explorer",
-    "ESG · Clusters": "Clusters",
-    "ESG · Industry Profiles": "Industry Profiles",
-    "Carbon · WS1 Data Audit": "Carbon Data Audit",
-    "Carbon · WS2 Panel & Trends": "Carbon Panel",
-    "Carbon · WS3 Taxonomy": "Carbon Taxonomy",
-    "Carbon · WS4 Samples": "Carbon Samples",
-    "Carbon · WS5 PCA Diagnostic": "Carbon PCA",
-    "SQL Query": "SQL Query",
+    "ESG — Main patterns (PCA)": "PCA Explorer",
+    "ESG — Company groups": "Clusters",
+    "ESG — Industry profiles": "Industry Profiles",
+    "Carbon 1 — Understanding the data": "Carbon Data Audit",
+    "Carbon 2 — Sourcing over time": "Carbon Panel",
+    "Carbon 3 — Grouping the metrics": "Carbon Taxonomy",
+    "Carbon 4 — Comparison samples": "Carbon Samples",
+    "Carbon 5 — Reported vs estimated (PCA)": "Carbon PCA",
+    "SQL query tool": "SQL Query",
 }
 choice = st.sidebar.radio("View", list(PAGES), label_visibility="collapsed")
 page = PAGES[choice]
 st.sidebar.caption(
-    "**ESG ·** exploratory analysis of all 95 metrics.\n\n"
-    "**Carbon ·** the carbon-risk research workstreams (WS1–WS5)."
+    "**ESG** — general exploration of all 95 sustainability metrics.\n\n"
+    "**Carbon** — a five-step look at the carbon data, following the research "
+    "plan."
 )
 st.sidebar.markdown("---")
 st.sidebar.caption(
@@ -165,7 +166,7 @@ if page == "Overview":
 
 # ============================== PCA ======================================== #
 elif page == "PCA Explorer":
-    st.title("PCA Explorer")
+    st.title("ESG — Main patterns across the metrics (PCA)")
     ev = D["explained"].values.ravel()
     st.markdown(
         f"**PC1** ({ev[0]:.0%} of variance) separates companies by ESG "
@@ -254,7 +255,7 @@ elif page == "PCA Explorer":
 
 # ============================== CLUSTERS =================================== #
 elif page == "Clusters":
-    st.title("Company Archetypes (KMeans)")
+    st.title("ESG — Groups of similar companies")
     k = st.slider("Number of clusters (k)", 3, 10, 6)
     if k != 6:
         labels = run_kmeans(D["scores"], k=k)
@@ -289,7 +290,7 @@ elif page == "Clusters":
 
 # ============================ INDUSTRY ===================================== #
 elif page == "Industry Profiles":
-    st.title("Industry ESG Profiles")
+    st.title("ESG — Industry profiles")
     st.markdown(
         "Mean **z-scored** metric value per industry (only industries with "
         "≥300 companies). Red = above average, blue = below."
@@ -337,69 +338,90 @@ elif page == "Industry Profiles":
 
 # ===================== CARBON · WS1 DATA AUDIT ============================= #
 elif page == "Carbon Data Audit":
-    st.title("WS1 · Carbon Data Audit")
+    st.title("Step 1 — Understanding the carbon data")
     st.markdown(
-        "Checking what the carbon data actually contains before we analyse it: "
-        "how many companies and years it covers, whether the values are clean, "
-        "and — importantly — how much data is missing. Carbon metrics only."
+        "This is the starting point for everything that follows. Before running "
+        "any analysis, we look at exactly what the carbon data contains: how many "
+        "companies and years it covers, how each metric is measured and sourced, "
+        "and how much of it is missing. Every later step (the trends, the "
+        "samples, the PCA) draws on the same data described here."
     )
 
     summ, pm, log = _carbon_audit()
     s = summ.iloc[0]
 
-    st.subheader("What the data covers")
+    st.subheader("The dataset at a glance")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Observations", f"{int(s['carbon_observations']):,}")
     c2.metric("Companies", f"{int(s['companies']):,}")
-    c3.metric("Metrics", int(s["carbon_metrics"]))
-    c4.metric("Years", f"{int(s['year_min'])}–{int(s['year_max'])}")
+    c3.metric("Carbon metrics", int(s["carbon_metrics"]))
+    c4.metric("Years covered", f"{int(s['year_min'])}–{int(s['year_max'])}")
 
-    st.subheader("How much is missing")
+    st.subheader("Each metric in detail")
     st.markdown(
-        f"The values that **are** recorded are clean (no null or impossible "
-        f"numbers). But the data is far from complete: most companies do not "
-        f"report most metrics every year."
+        "One row per carbon metric, showing how many companies report it, how "
+        "many years it spans, how it is sourced, and the size of the numbers. "
+        "This is the ground truth the rest of the analysis relies on."
+    )
+    view = pm[pm["n"] >= 100].copy()
+    tbl = view.assign(**{
+        "metric": view["metric_name"],
+        "type": view["group"],
+        "unit": view["unit"],
+        "companies": view["companies"],
+        "coverage": (view["coverage"] * 100).round(0).astype(int).astype(str) + "%",
+        "years": view["first_year"].astype(int).astype(str) + "–"
+                 + view["last_year"].astype(int).astype(str),
+        "reported %": (view["reported_share"] * 100).round(0).astype(int),
+        "estimated %": (view["estimated_share"] * 100).round(0).astype(int),
+        "median value": view["value_median"].round(1),
+    })
+    st.dataframe(
+        tbl[["metric", "type", "unit", "companies", "coverage", "years",
+             "reported %", "estimated %", "median value"]].sort_values(
+                 "companies", ascending=False),
+        use_container_width=True, hide_index=True)
+    st.caption(
+        "The emission metrics (Scope 1/2/3, NOx, SOx) cover almost every "
+        "company; renewable-energy and target metrics cover only a small "
+        "fraction. Most metrics are mainly provider-estimated, not "
+        "company-reported."
+    )
+
+    st.subheader("How much data is missing")
+    st.markdown(
+        "The values that are recorded are clean — no blank or impossible "
+        "numbers. The real limitation is coverage: most companies simply do not "
+        "have most metrics in most years."
     )
     m1, m2, m3 = st.columns(3)
-    m1.metric("Firm-metric-year cells missing",
+    m1.metric("Company–metric–year gaps",
               f"{s['structural_missing_share']*100:.0f}%",
-              help="Of every possible company × metric × year combination, this "
-                   "share simply does not exist in the data.")
-    m2.metric("Latest matrix empty",
+              help="Out of every possible company × metric × year combination, "
+                   "this share does not exist in the data.")
+    m2.metric("Latest snapshot empty",
               f"{s['matrix_missing_share']*100:.0f}%",
-              help="Taking each company's most recent value per metric, this "
+              help="Using each company's most recent value per metric, this "
                    "share of the company × metric grid is still blank.")
     m3.metric("No observation date",
               f"{s['reported_date_missing_share']*100:.0f}%",
-              help="Share of observations with no reported_date field.")
+              help="Share of observations with no recorded reporting date.")
 
-    st.subheader("Coverage by metric")
-    st.caption("Share of companies that have each metric (most recent year). "
-               "Emissions are widely covered; renewables and targets are sparse.")
-    cov = pm[["metric_name", "coverage"]].sort_values("coverage")
-    figc = px.bar(cov, x="coverage", y="metric_name", orientation="h",
-                  height=430, labels={"coverage": "% of companies", "metric_name": ""})
-    figc.update_xaxes(tickformat=".0%")
-    st.plotly_chart(figc, use_container_width=True)
-
-    st.subheader("Audit checks")
-    st.caption("Each check, what it verifies, and the result on this extract.")
+    st.subheader("Quality checks")
+    st.caption("Each check, what it looks at, and the result. 'PASS' means the "
+               "recorded values are sound; 'LIMITATION' flags the missing-data "
+               "gaps above — real caveats, not errors in the values.")
     st.dataframe(log, use_container_width=True, hide_index=True)
-    st.markdown(
-        "**Reading the results:** *PASS* means the recorded values are clean. "
-        "*LIMITATION* flags the missing-data issues above — real gaps to keep in "
-        "mind, not errors in the values themselves."
-    )
 
 
 # ================== CARBON · WS2 PANEL & TRENDS =========================== #
 elif page == "Carbon Panel":
-    st.title("WS2 · How carbon data is sourced, over time")
+    st.title("Step 2 — How the carbon data is sourced, over time")
     st.markdown(
         "Each carbon value comes from one of three sources: the company "
         "**reported** it, the provider **estimated** it, or it was "
         "**calculated**. Using the 2016–2024 data, this page shows how that mix "
-        "has changed and which metrics companies are starting to report "
+        "has changed, and which metrics companies are increasingly reporting "
         "themselves."
     )
 
@@ -443,7 +465,7 @@ elif page == "Carbon Panel":
 
 # ==================== CARBON · WS3 TAXONOMY =============================== #
 elif page == "Carbon Taxonomy":
-    st.title("WS3 · Grouping the carbon metrics")
+    st.title("Step 3 — Grouping the carbon metrics")
     st.markdown(
         "The carbon metrics measure different things, so we don't lump them into "
         "one score. Each metric is labelled two ways:\n\n"
@@ -488,54 +510,62 @@ elif page == "Carbon Taxonomy":
 
 # ==================== CARBON · WS4 SAMPLES =============================== #
 elif page == "Carbon Samples":
-    st.title("WS4 · Four data samples to compare")
+    st.title("Step 4 — Four groups of companies to compare")
     st.markdown(
-        "A reported number and an estimated number are not the same kind of "
-        "data, so we don't just mix them together. Instead we build four samples "
-        "and compare them:\n\n"
-        "- **all** — every company we have a value for.\n"
-        "- **reported** — only companies that reported the number themselves.\n"
-        "- **estimated** — only companies whose number the provider estimated.\n"
-        "- **common-support** — a fair-comparison subset (explained below)."
+        "A number a company reported and a number the provider estimated are not "
+        "the same kind of data, so we don't just mix them together. Instead we "
+        "look at four groups:\n\n"
+        "- **All** — every company we have a value for.\n"
+        "- **Reported** — only companies that reported the number themselves.\n"
+        "- **Estimated** — only companies whose number was estimated by the "
+        "provider.\n"
+        "- **Fair comparison** — a balanced group, explained at the bottom of "
+        "the page."
     )
 
+    SAMPLE_LABEL = {"all": "All", "reported": "Reported",
+                    "estimated": "Estimated", "common_support": "Fair comparison"}
     comp = pd.read_parquet(f"{OUT}/carbon_sample_compare.parquet")
-    show = comp.rename(columns={
+    show = comp.assign(group=comp["sample"].map(SAMPLE_LABEL)).rename(columns={
         "matrix_fill": "matrix fill", "scope1_median_tons": "Scope-1 median (t)"})
-    st.subheader("The four samples side by side")
-    st.dataframe(show, use_container_width=True, hide_index=True)
+    st.subheader("The four groups side by side")
+    st.dataframe(show[["group", "firms", "metrics", "matrix fill",
+                       "Scope-1 median (t)"]],
+                 use_container_width=True, hide_index=True)
     st.caption(
-        "Companies that report their own Scope-1 emissions are much bigger "
-        "emitters — a median of 8,207 tonnes, versus 439 tonnes for companies "
-        "whose figure is estimated (about 19× higher). In other words, the "
-        "provider mostly estimates the smaller companies that don't report."
+        "Companies that report their own Scope-1 emissions are far bigger "
+        "emitters — a median of about 8,200 tonnes, versus about 440 tonnes for "
+        "companies whose figure is estimated (roughly 19× higher). So the "
+        "provider is mostly estimating the smaller companies that don't report."
     )
 
-    fig = px.bar(comp, x="sample", y="firms", color="sample", text="firms",
-                 labels={"firms": "companies in sample", "sample": ""})
+    comp2 = comp.assign(group=comp["sample"].map(SAMPLE_LABEL))
+    fig = px.bar(comp2, x="group", y="firms", color="group", text="firms",
+                 labels={"firms": "companies", "group": ""})
     st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("What is the common-support sample?")
+    st.subheader("Why we build a \"fair comparison\" group")
     st.markdown(
-        "**The problem it solves.** Reported and estimated companies are very "
-        "different — reported ones are large emitters, estimated ones are small. "
-        "If we just compared the two groups as they are, any difference could "
-        "simply be *size*, not *reporting*.\n\n"
-        "**What we do.** For every company that reported its Scope-1 emissions, "
-        "we find the estimated company with the closest emissions and pair them "
-        "up. Keeping only these matched pairs gives the **common-support** "
-        "sample — reported and estimated companies of similar size.\n\n"
-        "**Why it matters.** Its median (6,571 t) sits between the two groups, "
-        "confirming the pairs are comparable. Now, if reported and estimated "
-        "data still behave differently here, it is because of *how the number "
-        "was produced* — not because the companies are different sizes. This is "
-        "the sample that makes a reported-vs-estimated comparison fair."
+        "There's a catch in comparing reported vs. estimated companies directly: "
+        "the reported ones are big emitters and the estimated ones are small. So "
+        "if the two groups look different, we can't tell whether it's because of "
+        "**how the number was produced** or simply because **big and small "
+        "companies are different**.\n\n"
+        "To remove the size difference, we pair up companies of similar size — "
+        "each reporting company is matched with an estimated company that emits "
+        "about the same amount (like matching people of the same height before "
+        "comparing their weight). Keeping only these matched pairs gives the "
+        "**fair-comparison group**: reported and estimated companies that are "
+        "alike in size.\n\n"
+        "Now any remaining difference between them is down to reporting vs. "
+        "estimation — not size. This is the group we trust most when comparing "
+        "the two data sources."
     )
 
 
 # ===================== CARBON · WS5 PCA DIAGNOSTIC ======================== #
 elif page == "Carbon PCA":
-    st.title("WS5 · Do reported and estimated data tell the same story?")
+    st.title("Step 5 — Do reported and estimated data tell the same story?")
     st.markdown(
         "**The question (from the plan).** Is there a single, meaningful "
         "\"carbon\" pattern in the data — and does it hold up whether the numbers "
@@ -567,7 +597,7 @@ elif page == "Carbon PCA":
 
     cexp, cload = carbon_pca_tables()
     SAMPLE_NAME = {"all": "All", "reported": "Reported",
-                   "estimated": "Estimated", "common_support": "Common-support"}
+                   "estimated": "Estimated", "common_support": "Fair comparison"}
 
     st.subheader("Is there one strong carbon score? (higher = yes)")
     st.caption("How much of the differences between companies the single carbon "
@@ -646,7 +676,7 @@ elif page == "Carbon PCA":
 elif page == "SQL Query":
     import sqlite3
 
-    st.title("SQL Query")
+    st.title("SQL query tool")
     DB_PATH = f"{OUT}/esg.db"
     if not os.path.exists(DB_PATH):
         st.error(
