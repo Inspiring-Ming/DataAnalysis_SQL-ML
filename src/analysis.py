@@ -222,41 +222,69 @@ def carbon_audit() -> dict:
     per_metric["companies"] = p.groupby("metric_name")["perm_id"].nunique().reindex(
         per_metric["metric_name"]).values
 
+    # coverage = share of ALL firms that have this metric (latest year). This is
+    # the real "missing data" story: most cells are absent, not null.
+    latest = p.sort_values("year").drop_duplicates(
+        ["perm_id", "metric_name"], keep="last")
+    n_firms = p["perm_id"].nunique()
+    per_metric["coverage"] = (
+        per_metric["companies"] / n_firms).round(3)
+
     dup = int(p.duplicated(["perm_id", "metric_name", "year"]).sum())
     n_units = int((p.groupby("metric_name")["metric_unit"].nunique() > 1).sum())
     neg = int((p[p["metric_name"] == "CO2DIRECTSCOPE1"]["value_num"] < 0).sum())
     yrs = sorted(p["year"].unique())
 
+    n_metrics = p["metric_name"].nunique()
+    possible_cells = n_firms * n_metrics * len(yrs)
+    struct_missing = 1 - len(p) / possible_cells        # firm-metric-year gaps
+    wide = latest.pivot_table(index="perm_id", columns="metric_name",
+                              values="value_num", aggfunc="last")
+    matrix_missing = 1 - float(wide.notna().mean().mean())   # latest firm x metric
+    rd_missing = float(p["reported_date"].isna().mean())
+
     summary = pd.DataFrame([{
         "carbon_observations": len(p),
-        "companies": p["perm_id"].nunique(),
-        "carbon_metrics": p["metric_name"].nunique(),
+        "companies": n_firms,
+        "carbon_metrics": n_metrics,
         "year_min": yrs[0], "year_max": yrs[-1],
         "duplicate_firm_metric_year": dup,
         "null_identifiers": int(p["perm_id"].isna().sum()),
-        "null_values": int(p["value_num"].isna().sum()),
+        "null_values_in_existing": int(p["value_num"].isna().sum()),
+        "structural_missing_share": round(struct_missing, 3),
+        "matrix_missing_share": round(matrix_missing, 3),
+        "reported_date_missing_share": round(rd_missing, 3),
         "metrics_multi_unit": n_units,
     }])
 
-    # explicit audit log -- records each required check and its outcome
+    # explicit audit log -- records each required check and its outcome.
+    # We separate "values that exist are clean" (PASS) from "how much data is
+    # missing" (NOTE / LIMITATION), so the audit is honest about coverage.
     log = [
-        ("Identifiers", "perm_id present for every observation",
+        ("Identifiers", "perm_id present on every observation",
          f"{int(p['perm_id'].isna().sum())} null identifiers", "PASS"),
         ("Duplicates", "no duplicate firm-metric-year rows",
          f"{dup} duplicates", "PASS" if dup == 0 else "REVIEW"),
-        ("Years", "time dimension present and contiguous",
+        ("Years", "time dimension present",
          f"{yrs[0]}-{yrs[-1]} ({len(yrs)} years)", "PASS"),
-        ("Units", "each metric uses a single consistent unit",
+        ("Units", "each metric uses one consistent unit",
          f"{n_units} metrics with mixed units", "PASS" if n_units == 0 else "REVIEW"),
-        ("Missing values", "no null numeric values",
-         f"{int(p['value_num'].isna().sum())} null values", "PASS"),
+        ("Recorded values", "values that exist are non-null and numeric",
+         f"{int(p['value_num'].isna().sum())} null among recorded values", "PASS"),
         ("Value sanity", "no negative Scope-1 emissions",
          f"{neg} negative values", "PASS" if neg == 0 else "REVIEW"),
+        ("Coverage / completeness",
+         "how much of the firm-metric-year grid is actually filled",
+         f"{struct_missing*100:.0f}% of firm-metric-year cells are absent; "
+         f"{matrix_missing*100:.0f}% of the latest firm x metric matrix is empty",
+         "LIMITATION"),
+        ("Reported date", "observation-date field populated",
+         f"{rd_missing*100:.0f}% of observations have no reported_date", "LIMITATION"),
         ("Provenance", "every observation tagged reported/estimated/calculated",
          f"{p['disclosure'].nunique()} states: "
          + ", ".join(sorted(p['disclosure'].unique())), "PASS"),
         ("Source versions", "duplicated raw .csv/.csv.gz files read once",
-         "de-duplicated at ingest (build_carbon_panel)", "PASS"),
+         "de-duplicated at ingest", "PASS"),
     ]
     audit_log = pd.DataFrame(log, columns=["check", "requirement", "finding", "status"])
 

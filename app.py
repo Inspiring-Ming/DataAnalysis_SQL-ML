@@ -339,46 +339,76 @@ elif page == "Industry Profiles":
 elif page == "Carbon Data Audit":
     st.title("WS1 · Carbon Data Audit")
     st.markdown(
-        "Before studying carbon risk we verify *what is in the carbon data* and "
-        "**record the audit**: identifiers, duplicates, years, units, missing "
-        "values, value sanity, provenance, and source-version handling. Scope is "
-        "carbon metrics only."
+        "Checking what the carbon data actually contains before we analyse it: "
+        "how many companies and years it covers, whether the values are clean, "
+        "and — importantly — how much data is missing. Carbon metrics only."
     )
 
     summ, pm, log = _carbon_audit()
     s = summ.iloc[0]
 
-    st.subheader("Coverage")
+    st.subheader("What the data covers")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Carbon observations", f"{int(s['carbon_observations']):,}")
+    c1.metric("Observations", f"{int(s['carbon_observations']):,}")
     c2.metric("Companies", f"{int(s['companies']):,}")
-    c3.metric("Carbon metrics", int(s["carbon_metrics"]))
-    c4.metric("Panel years", f"{int(s['year_min'])}–{int(s['year_max'])}")
+    c3.metric("Metrics", int(s["carbon_metrics"]))
+    c4.metric("Years", f"{int(s['year_min'])}–{int(s['year_max'])}")
 
-    st.subheader("Audit log")
-    st.caption("Each required check, what it verifies, and the finding on this "
-               "extract. Recorded so the audit is reproducible and reviewable.")
+    st.subheader("How much is missing")
+    st.markdown(
+        f"The values that **are** recorded are clean (no null or impossible "
+        f"numbers). But the data is far from complete: most companies do not "
+        f"report most metrics every year."
+    )
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Firm-metric-year cells missing",
+              f"{s['structural_missing_share']*100:.0f}%",
+              help="Of every possible company × metric × year combination, this "
+                   "share simply does not exist in the data.")
+    m2.metric("Latest matrix empty",
+              f"{s['matrix_missing_share']*100:.0f}%",
+              help="Taking each company's most recent value per metric, this "
+                   "share of the company × metric grid is still blank.")
+    m3.metric("No observation date",
+              f"{s['reported_date_missing_share']*100:.0f}%",
+              help="Share of observations with no reported_date field.")
+
+    st.subheader("Coverage by metric")
+    st.caption("Share of companies that have each metric (most recent year). "
+               "Emissions are widely covered; renewables and targets are sparse.")
+    cov = pm[["metric_name", "coverage"]].sort_values("coverage")
+    figc = px.bar(cov, x="coverage", y="metric_name", orientation="h",
+                  height=430, labels={"coverage": "% of companies", "metric_name": ""})
+    figc.update_xaxes(tickformat=".0%")
+    st.plotly_chart(figc, use_container_width=True)
+
+    st.subheader("Audit checks")
+    st.caption("Each check, what it verifies, and the result on this extract.")
     st.dataframe(log, use_container_width=True, hide_index=True)
-    st.caption("All checks PASS: the carbon subset is well-formed (clean "
-               "identifiers, single units, no duplicates or impossible values).")
+    st.markdown(
+        "**Reading the results:** *PASS* means the recorded values are clean. "
+        "*LIMITATION* flags the missing-data issues above — real gaps to keep in "
+        "mind, not errors in the values themselves."
+    )
 
 
 # ================== CARBON · WS2 PANEL & TRENDS =========================== #
 elif page == "Carbon Panel":
-    st.title("WS2 · Panel & Source-Type Trends")
+    st.title("WS2 · How carbon data is sourced, over time")
     st.markdown(
-        "Every carbon observation is categorised by its **source type** — "
-        "company-**reported**, provider-**estimated**, or **calculated** — and "
-        "analysed together on the 2016–2024 panel, so coverage and the overall "
-        "reporting trend are comparable across metrics."
+        "Each carbon value comes from one of three sources: the company "
+        "**reported** it, the provider **estimated** it, or it was "
+        "**calculated**. Using the 2016–2024 data, this page shows how that mix "
+        "has changed and which metrics companies are starting to report "
+        "themselves."
     )
 
     by_year = _carbon_by_year()
 
-    st.subheader("Source-type mix over time (all carbon metrics)")
-    st.caption("Composition of every carbon observation each year. A growing "
-               "green share = firms increasingly report rather than rely on "
-               "provider estimates.")
+    st.subheader("Where the data comes from, each year")
+    st.caption("Every carbon value per year, split by source. More green over "
+               "time means companies are reporting their own numbers instead of "
+               "the provider estimating them.")
     mix = by_year[by_year["year"] <= 2023].copy()
     mix["reported"] = mix["reported_share"] * mix["observations"]
     mix["estimated"] = mix["estimated_share"] * mix["observations"]
@@ -391,8 +421,9 @@ elif page == "Carbon Panel":
                                       "estimated": "#d9822b", "other": "#4682b4"})
     st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("Reported share over time, by metric")
-    st.caption("Per-metric trend. Rising = disclosure improving for that metric.")
+    st.subheader("Share reported, by metric")
+    st.caption("For each metric, the share of companies reporting it themselves. "
+               "A rising line means more companies report that metric over time.")
     metrics_ts = sorted(by_year["metric_name"].unique())
     default_ts = [m for m in ["CO2DIRECTSCOPE1", "CO2INDIRECTSCOPE2",
                               "ENERGYUSETOTAL"] if m in metrics_ts]
@@ -412,22 +443,24 @@ elif page == "Carbon Panel":
 
 # ==================== CARBON · WS3 TAXONOMY =============================== #
 elif page == "Carbon Taxonomy":
-    st.title("WS3 · Carbon Metric Taxonomy")
+    st.title("WS3 · Grouping the carbon metrics")
     st.markdown(
-        "Carbon metrics are organised on two dimensions so they are not treated "
-        "as one undifferentiated score:\n\n"
-        "- **Economic meaning** — *exposure* (physical emissions/energy) vs "
-        "*commitment* (policies/targets).\n"
-        "- **Emission locus** — *direct* (Scope 1 & direct air pollutants), "
-        "*indirect* (Scope 2 & 3), or *energy* use."
+        "The carbon metrics measure different things, so we don't lump them into "
+        "one score. Each metric is labelled two ways:\n\n"
+        "- **What it measures** — *exposure* (actual emissions and energy use) or "
+        "*commitment* (policies and targets the company sets).\n"
+        "- **Where the emissions come from** — *direct* (the company's own "
+        "operations: Scope 1 and air pollutants), *indirect* (Scope 2 and 3, "
+        "from purchased energy and the supply chain), or *energy* use."
     )
 
     _, pm, _ = _carbon_audit()
     pm = pm[pm["n"] >= 100].copy()
 
-    st.subheader("Reported vs estimated, by emission locus")
-    st.caption("Direct emissions are the least self-reported; energy the most. "
-               "Data quality differs systematically by emission type.")
+    st.subheader("How often each emission type is company-reported")
+    st.caption("Companies report their direct emissions the least and their "
+               "energy use the most — so data reliability depends on the "
+               "emission type.")
     dim = pm[pm["group"] == "exposure"].copy()
     byloc = dim.groupby("emission").apply(
         lambda x: pd.Series({
@@ -455,49 +488,77 @@ elif page == "Carbon Taxonomy":
 
 # ==================== CARBON · WS4 SAMPLES =============================== #
 elif page == "Carbon Samples":
-    st.title("WS4 · Four Comparable Samples")
+    st.title("WS4 · Four data samples to compare")
     st.markdown(
-        "Reported and estimated carbon observations are generated differently, "
-        "so they are not pooled mechanically. Four parallel samples let us see "
-        "how coverage and distributions differ:\n\n"
-        "- **all** — every usable observation.\n"
-        "- **reported** — company-reported only.\n"
-        "- **estimated** — provider-estimated only.\n"
-        "- **common-support** — each reported firm 1:1 matched to the estimated "
-        "firm with the closest Scope-1 emissions, so the groups are comparable."
+        "A reported number and an estimated number are not the same kind of "
+        "data, so we don't just mix them together. Instead we build four samples "
+        "and compare them:\n\n"
+        "- **all** — every company we have a value for.\n"
+        "- **reported** — only companies that reported the number themselves.\n"
+        "- **estimated** — only companies whose number the provider estimated.\n"
+        "- **common-support** — a fair-comparison subset (explained below)."
     )
 
     comp = pd.read_parquet(f"{OUT}/carbon_sample_compare.parquet")
     show = comp.rename(columns={
-        "sample": "sample", "firms": "firms", "metrics": "metrics",
         "matrix_fill": "matrix fill", "scope1_median_tons": "Scope-1 median (t)"})
-    st.subheader("Sample comparison")
+    st.subheader("The four samples side by side")
     st.dataframe(show, use_container_width=True, hide_index=True)
     st.caption(
-        "Reported firms have a **~19× higher** median Scope-1 than estimated "
-        "firms (8,207 vs 439 t) — estimation fills in the smaller, more opaque "
-        "firms. Matching brings the common-support median in between, giving a "
-        "like-for-like comparison set."
+        "Companies that report their own Scope-1 emissions are much bigger "
+        "emitters — a median of 8,207 tonnes, versus 439 tonnes for companies "
+        "whose figure is estimated (about 19× higher). In other words, the "
+        "provider mostly estimates the smaller companies that don't report."
     )
 
     fig = px.bar(comp, x="sample", y="firms", color="sample", text="firms",
-                 labels={"firms": "firms in sample", "sample": ""})
+                 labels={"firms": "companies in sample", "sample": ""})
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("Pooling 'all' would blend true emissions with model estimates; "
-               "the split + matched samples make provenance testable (WS5).")
+
+    st.subheader("What is the common-support sample?")
+    st.markdown(
+        "**The problem it solves.** Reported and estimated companies are very "
+        "different — reported ones are large emitters, estimated ones are small. "
+        "If we just compared the two groups as they are, any difference could "
+        "simply be *size*, not *reporting*.\n\n"
+        "**What we do.** For every company that reported its Scope-1 emissions, "
+        "we find the estimated company with the closest emissions and pair them "
+        "up. Keeping only these matched pairs gives the **common-support** "
+        "sample — reported and estimated companies of similar size.\n\n"
+        "**Why it matters.** Its median (6,571 t) sits between the two groups, "
+        "confirming the pairs are comparable. Now, if reported and estimated "
+        "data still behave differently here, it is because of *how the number "
+        "was produced* — not because the companies are different sizes. This is "
+        "the sample that makes a reported-vs-estimated comparison fair."
+    )
 
 
 # ===================== CARBON · WS5 PCA DIAGNOSTIC ======================== #
 elif page == "Carbon PCA":
-    st.title("WS5 · Carbon PCA Diagnostic")
+    st.title("WS5 · Do reported and estimated data tell the same story?")
     st.markdown(
-        "The broad 95-metric ESG PCA mixes emissions with policy and governance. "
-        "Here the PCA is restricted to **carbon-exposure variables only** (Scope "
-        "1/2/3, energy, air pollutants, renewables) and run on each of the four "
-        "**samples** from WS4 — *all*, *reported*, *estimated*, *common-support* "
-        "— to test whether the carbon factor survives when reported and estimated "
-        "data are separated."
+        "**The question (from the plan).** Is there a single, meaningful "
+        "\"carbon\" pattern in the data — and does it hold up whether the numbers "
+        "were reported by companies or estimated by the provider? If it holds up, "
+        "the project can focus on carbon *exposure*. If it falls apart once we "
+        "separate reported from estimated, the story is really about data "
+        "*quality*."
     )
+    with st.expander("What is PCA doing here, in plain terms?"):
+        st.markdown(
+            "Each company has several carbon numbers (Scope 1, 2, 3, energy, air "
+            "pollutants). These tend to move together — a heavy emitter is high "
+            "on most of them. **PCA finds the one combined score that best "
+            "captures that shared movement** — think of it as an overall "
+            "\"carbon-intensity\" score built from all the metrics at once.\n\n"
+            "Two things tell us if that score is meaningful:\n"
+            "- **How much it explains (PC1 %)** — a high number means one carbon "
+            "score really does summarise most of the differences between "
+            "companies.\n"
+            "- **What goes into it (loadings)** — the weight each metric carries. "
+            "If the weights look the same across the four samples, the carbon "
+            "score means the same thing regardless of how the data was sourced."
+        )
 
     @st.cache_data(show_spinner=False)
     def carbon_pca_tables():
@@ -508,68 +569,76 @@ elif page == "Carbon PCA":
     SAMPLE_NAME = {"all": "All", "reported": "Reported",
                    "estimated": "Estimated", "common_support": "Common-support"}
 
-    st.subheader("How strong is the single carbon factor? (PC1 variance)")
+    st.subheader("Is there one strong carbon score? (higher = yes)")
+    st.caption("How much of the differences between companies the single carbon "
+               "score captures, in each sample.")
     pc1 = cexp[cexp["PC"] == "PC1"].copy()
     pc1["sample_name"] = pc1["sample"].map(SAMPLE_NAME)
     fig = px.bar(pc1, x="sample_name", y="explained", color="sample_name",
                  text=pc1["explained"].mul(100).round(0).astype(int).astype(str) + "%",
-                 labels={"explained": "PC1 % of variance", "sample_name": ""},
+                 labels={"explained": "share explained by the carbon score",
+                         "sample_name": ""},
                  hover_data=["n_firms", "n_metrics"])
     fig.update_yaxes(tickformat=".0%")
     st.plotly_chart(fig, use_container_width=True)
     st.caption(
-        "A dominant PC1 in every sample means carbon exposure is a strong single "
-        "factor whether or not estimates are included."
+        "The carbon score captures a large share in every sample (35–63%), so a "
+        "single carbon-intensity measure is meaningful whether the data is "
+        "reported or estimated."
     )
 
-    st.subheader("Scree — variance explained per component, by sample")
-    cexp2 = cexp.copy()
-    cexp2["sample_name"] = cexp2["sample"].map(SAMPLE_NAME)
-    fig2 = px.line(cexp2, x="PC", y="explained", color="sample_name",
-                   markers=True, labels={"explained": "% variance", "PC": "",
-                                         "sample_name": "sample"})
-    fig2.update_yaxes(tickformat=".0%")
-    st.plotly_chart(fig2, use_container_width=True)
-
-    st.subheader("Is the carbon factor the same shape? (PC1 loadings)")
+    st.subheader("What goes into the carbon score? (should match across samples)")
     st.caption(
-        "Each metric's weight in PC1, per sample. Bars lining up across samples "
-        "means the carbon factor is stable (plan Decision Point 1: carbon "
-        "exposure). Renewables are absent from the estimated sample — providers "
-        "estimate emissions, not renewable-energy use."
+        "Each metric's weight in the score, for every sample. The weights line up "
+        "on Scope 1/2/3, energy and air pollutants across all samples — so the "
+        "score means the same thing regardless of data source. (Renewables "
+        "appear only in the reported sample, because the provider does not "
+        "estimate renewable-energy use.)"
     )
     cl = cload.copy()
     cl["sample_name"] = cl["sample"].map(SAMPLE_NAME)
     fig3 = px.bar(cl, x="PC1", y="metric_name", color="sample_name",
                   orientation="h", barmode="group", height=650,
-                  labels={"PC1": "PC1 loading", "metric_name": "",
+                  labels={"PC1": "weight in the carbon score", "metric_name": "",
                           "sample_name": "sample"})
     fig3.update_layout(yaxis={"categoryorder": "total ascending"})
     st.plotly_chart(fig3, use_container_width=True)
 
-    with st.expander("Interpretation & method"):
+    st.subheader("What this means for the research direction")
+    st.markdown(
+        "The carbon score is **strong and consistent** across all four samples — "
+        "reported, estimated, and the matched common-support set all produce the "
+        "same emissions-based factor. Separating reported from estimated data "
+        "does **not** break it.\n\n"
+        "This points to the plan's **first option: a carbon-exposure result** — "
+        "the project can focus on the pricing and materiality of real carbon "
+        "exposure, rather than treating estimation quality as the main story. "
+        "(The provider's estimates broadly reproduce the same structure as "
+        "company-reported figures.)"
+    )
+
+    with st.expander("Method details"):
         st.markdown(
-            "- **Samples.** Firm × carbon-exposure-metric matrix, latest year "
-            "per firm-metric, from the 2016–2024 panel (metrics with ≥500 firms; "
-            "firms with ≥3 metrics).\n"
-            "- **Pipeline.** Signed-log heavy-tailed magnitudes → median-impute "
-            "→ z-score → ±8σ clip → PCA (same as the main ESG PCA, carbon-only).\n"
-            "- **Reading.** PC1 loads evenly on Scope 1/2/3, energy and air "
-            "pollutants in every sample — a genuine *carbon-intensity* factor, "
-            "cleaner than the broad ESG PC1. The factor is broadly **stable** "
-            "across provenance, pointing toward the plan's Decision Point 1 "
-            "(carbon-exposure result)."
+            "- **Data.** One row per company, its most recent value for each "
+            "carbon-exposure metric, from the 2016–2024 panel (metrics kept if "
+            "held by ≥500 companies; companies kept with ≥3 metrics).\n"
+            "- **Processing.** Log-scale the large emission values, fill gaps "
+            "with the median, standardise, cap extreme outliers, then run PCA — "
+            "the same steps as the main ESG PCA, carbon metrics only.\n"
+            "- **Note.** The broad 95-metric ESG PCA mixes emissions with policy "
+            "and governance; restricting to carbon metrics gives a cleaner "
+            "carbon-only factor, as the plan asked."
         )
 
     with st.expander("WS6 — what stays in the research pipeline"):
         st.markdown(
-            "This platform delivers the **diagnostic** workstreams (WS1–WS5). "
-            "**WS6 (financial-identifier crosswalk + look-ahead-bias timing "
-            "rules for the asset-pricing tests) stays in the private research "
-            "pipeline** — it links carbon data to returns/financing costs, which "
-            "should not sit behind a shared public password. The panel carries "
-            "`reported_date` for ~46% of observations, so realistic "
-            "information-availability timing can be reconstructed there later."
+            "This platform covers the diagnostic steps (WS1–WS5). **WS6 — "
+            "linking carbon data to stock returns and financing costs for the "
+            "pricing tests — stays in the private research pipeline**, since "
+            "return-linked financial data should not sit behind a shared "
+            "password. Only about **12% of observations carry a reported date**, "
+            "so building realistic information-timing rules will need care and is "
+            "best done in that pipeline."
         )
 
 
