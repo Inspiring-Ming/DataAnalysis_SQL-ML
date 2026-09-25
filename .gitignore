@@ -6,8 +6,10 @@ __pycache__/
 # Secrets must never be committed (real password lives in Streamlit Cloud).
 .streamlit/secrets.toml
 
-# Full SQLite DB (~960 MB) is local-only — exceeds GitHub's file limit.
-# The slim esg.db IS committed (the hosted app reads it).
+# SQLite DBs are local-only: they are derived from a licensed Clarity AI
+# dataset and should not be redistributed. Rebuild with src/build_sqlite.py
+# if you hold a licence to the source data.
+outputs/*.db
 outputs/esg_full.db
 
 # NOTE: outputs/*.parquet ARE committed on purpose — the app reads them at

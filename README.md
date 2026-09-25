@@ -16,6 +16,15 @@ via perm-id.
 
 ---
 
+## Data access
+
+The analysis runs on Clarity AI corporate ESG data (Feb 2025), which is licensed
+and **not redistributed here**. `outputs/esg.db` is gitignored for that reason.
+
+To reproduce: point `src/prepare_data.py` at your own licensed copy of the source
+CSVs, then run `src/build_sqlite.py` to rebuild the database. The code, analysis
+and findings in this repository are complete and independent of the raw data.
+
 ## Headline findings
 
 - **PC1 ≈ "ESG disclosure maturity / environmental footprint."** The first
